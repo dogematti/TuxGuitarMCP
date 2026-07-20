@@ -24,9 +24,14 @@ jobs:
         if: steps.tg-cache.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch 2.0.1 https://github.com/helge17/tuxguitar /tmp/tuxguitar
-          # Build the modules the plugin compiles against (deps pulled via -am).
-          mvn -q -f /tmp/tuxguitar/desktop/pom.xml -DskipTests install \
-            -pl :tuxguitar-lib,:tuxguitar-editor-utils,:tuxguitar-ui-toolkit,:tuxguitar -am
+          # The desktop pom's reactor excludes common/ modules — build each
+          # module pom directly, in dependency order (parent first).
+          mvn -q -N -f /tmp/tuxguitar/desktop/pom.xml -DskipTests install
+          for m in common/TuxGuitar-lib common/TuxGuitar-gm-utils \
+                   common/TuxGuitar-editor-utils desktop/TuxGuitar-ui-toolkit \
+                   desktop/TuxGuitar; do
+            mvn -q -f "/tmp/tuxguitar/$m/pom.xml" -DskipTests install
+          done
           # Re-install under the 2.0.1 coordinates the plugin pom expects.
           for a in tuxguitar-lib tuxguitar-editor-utils tuxguitar-ui-toolkit tuxguitar; do
             jar=$(find ~/.m2/repository/app/tuxguitar/$a -name "*.jar" ! -name "*sources*" | head -1)

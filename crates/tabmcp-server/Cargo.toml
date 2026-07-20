@@ -21,3 +21,4 @@ serde = { workspace = true, features = ["derive"] }
 schemars = "1"
 hound = "3"
 rustfft = "6"
+midly = "0.5"

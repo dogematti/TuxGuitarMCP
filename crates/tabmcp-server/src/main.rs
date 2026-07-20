@@ -12,6 +12,7 @@ use tabmcp_bridge::{default_discovery_path, sim, BridgeClient};
 use tabmcp_theory::note_name;
 
 mod audio;
+mod render;
 mod serve;
 
 fn main() -> ExitCode {

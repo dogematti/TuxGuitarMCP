@@ -1574,6 +1574,64 @@ impl TabMcp {
     }
 
     #[tool(
+        description = "AI EAR stems: render EACH track to its own audio file and analyze them separately (per-track loudness, spectral balance, clipping) — hears which instrument causes mud or imbalance, which the full-mix render can't isolate. Slower: one synth render per track. Stems kept at ~/.tuxguitar-mcp/stems/ for the user.",
+        annotations(title = "Listen to stems", read_only_hint = true)
+    )]
+    async fn tuxguitar_listen_stems(&self) -> Result<String, ErrorData> {
+        let song = self.fetch_song().await?;
+        let midi = self
+            .call_bridge(|client| client.render_midi())
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let midi_path = PathBuf::from(
+            midi.get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| ErrorData::internal_error("bridge returned no render path", None))?,
+        );
+        let home = std::env::var("HOME").unwrap_or_default();
+        let stems_dir = PathBuf::from(&home).join(".tuxguitar-mcp/stems");
+
+        let track_names: Vec<String> = song
+            .tracks
+            .iter()
+            .map(|t| format!("{} \"{}\"", t.number, t.name))
+            .collect();
+        let report =
+            tokio::task::spawn_blocking(move || -> Result<String, String> {
+                let stems = crate::render::split_stems(&midi_path, &stems_dir)?;
+                let mut out = String::new();
+                for (i, stem) in stems.iter().enumerate() {
+                    let wav = stem.with_extension("wav");
+                    crate::render::render_wav(stem, &wav)?;
+                    let analysis = crate::audio::analyze_wav(&wav)?;
+                    let (low, mid, high) = analysis.band_share;
+                    let label = track_names
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| format!("stem {}", i + 1));
+                    out.push_str(&format!(
+                    "Track {label}: peak {:.1} dBFS, RMS {:.1} dBFS, spectrum {:.0}/{:.0}/{:.0}% \
+                     (low/mid/high){}\n",
+                    analysis.peak_dbfs,
+                    analysis.rms_dbfs,
+                    low * 100.0,
+                    mid * 100.0,
+                    high * 100.0,
+                    if analysis.clipped_samples > 0 { " CLIPPING" } else { "" },
+                ));
+                }
+                Ok(out)
+            })
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("stem task failed: {e}"), None))?
+            .map_err(|e| ErrorData::internal_error(e, None))?;
+
+        Ok(format!(
+            "Per-track stems:\n{report}Stems kept in ~/.tuxguitar-mcp/stems/ (mid + wav per track).",
+        ))
+    }
+
+    #[tool(
         description = "The 'virtual ear', audio edition: render the WHOLE song through TuxGuitar's own soundfont (headless MIDI -> fluidsynth -> WAV) and analyze the actual audio — true loudness, clipping, spectral balance (low-end mud / darkness), and quiet holes. Slower than tuxguitar_analyze_arrangement (use that for note-level issues); use this to hear the MIX. Requires fluidsynth (brew install fluid-synth). The WAV is kept at ~/.tuxguitar-mcp/render.wav for the user to play.",
         annotations(title = "Render & listen", read_only_hint = true)
     )]
