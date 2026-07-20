@@ -36,14 +36,14 @@ the AI iterates —
 5. **Repeat**, narrating each pass — the undo stack is the version history
    (one Cmd+Z per pass)
 
-## Tool surface (38 tools + 2 prompts)
+## Tool surface (40 tools + 2 prompts)
 
 | Area | Tools |
 |---|---|
 | Status & reading | `get_bridge_status`, `get_score_summary`, `get_measures`, `get_selection` |
-| Analysis | `evaluate` (AI Ear scorecard), `analyze_arrangement`, `detect_key_and_scale` (44-scale catalog incl. phrygian dominant, hirajoshi, ...), `detect_chords`, `explain_selection` |
+| Analysis | `evaluate` (AI Ear scorecard), `analyze_arrangement`, `detect_key_and_scale` (44-scale catalog incl. phrygian dominant, hirajoshi, ...), `detect_chords`, `explain_selection`, `style_guide` (15-genre composition recipes: scales, cells, techniques, signature devices) |
 | Audio ear | `render_and_listen` (full mix + per-measure levels), `listen_stems` (per track, with auto-prescriptions) |
-| Writing | `replace_measures` (chords, tuplets, two voices, pinch harmonics, bend curves), `transpose`, `humanize`, `copy_measures`, `import_midi` (MIDI -> optimized tab) |
+| Writing | `replace_measures` (chords, tuplets, two voices, pinch harmonics, bend curves), `transpose`, `humanize`, `copy_measures`, `vary_riff` (displacement/retrograde transforms), `import_midi` (MIDI -> optimized tab) |
 | Fingering | `optimize_fingering` — chord-aware DP with explanations, fret-range constraints, cost presets (`metal`) |
 | Generation | `generate_bassline` (root-anchor detection, soundfont-safe register), `generate_harmony` (3rds/6ths, any catalog scale), `generate_drums` (styles: rock, metal-gallop, punk, halftime, blast, d-beat; meter-aware; `target_track` for per-section grooves) |
 | Structure | `create_track` (presets incl. 7-string A standard, bass clef, percussion), `change_tuning`, `set_tempo`, `set_time_signature` (odd meters), `set_key_signature`, `insert_measures`, `delete_measures`, `set_repeat` (loops), `set_marker` |
