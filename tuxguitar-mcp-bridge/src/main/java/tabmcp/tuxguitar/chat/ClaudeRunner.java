@@ -115,6 +115,12 @@ public class ClaudeRunner {
 
 	/** Run one turn on the CALLER's thread (call from a background thread). */
 	public void runTurn(String prompt, boolean continueSession, Listener listener) {
+		this.runTurn(prompt, continueSession, null, listener);
+	}
+
+	/** Run one turn with an optional model override from the UI picker. */
+	public void runTurn(String prompt, boolean continueSession, String modelOverride,
+			Listener listener) {
 		String claude = resolveClaude();
 		if (claude == null) {
 			listener.onFailure(
@@ -143,7 +149,8 @@ public class ClaudeRunner {
 		command.add(this.config.getProperty("allowed.tools", "mcp__tuxguitar"));
 		command.add("--append-system-prompt");
 		command.add(SYSTEM_CONTEXT);
-		String model = this.config.getProperty("claude.model");
+		String model = (modelOverride != null && !modelOverride.isEmpty())
+			? modelOverride : this.config.getProperty("claude.model");
 		if (model != null && !model.isEmpty()) {
 			command.add("--model");
 			command.add(model);
