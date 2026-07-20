@@ -42,9 +42,19 @@ public class ChatDialog {
 		{ "Hook-check this riff", "Run tuxguitar_hook_check on the current selection (or measures 1-4 of track 1) and revise until it passes." },
 		{ "Producer notes", "Run tuxguitar_producer_notes and apply the best suggestion." },
 		{ "Write a groove riff", "Write an 8-bar groove metal riff on the current track with generate_riff, gate it through hook_check, then generate interlocked drums and bass, humanize, and play it." },
+		{ "Full metalcore song", "Check the style guide for metalcore (use my player notes), then write a 20-bar song: 7-string A standard, markers Intro/Verse/Breakdown/Outro, generate_riff seeded verse with kick-accent unison, varied second half, hook-checked, interlocked breakdown drums, bass, counterline if there are gaps, humanize, one AI Ear pass with style=metalcore, then play it." },
 		{ "Vary the selection", "Take the selected measures and give me three variations: one displaced, one inverted, one regrouped 3+3+2. Write them into the following measures and play the result." },
+		{ "Evolve this riff", "Run tuxguitar_evolve_riff on the selection (4 generations), apply the winner, and show me the lineage." },
+		{ "Extract riff DNA", "Run tuxguitar_riff_dna on the selection and save it to the DNA bank with a fitting name; then suggest one way to evolve it." },
+		{ "Re-bar to 7/8", "Set the next free measures to 7/8 with set_time_signature, then rebar the selected riff into them and play both versions back to back." },
+		{ "Add a counterline", "Generate a counterline answering the selected riff's gaps on a new track, humanize it, and play the result." },
 		{ "Make it heavier", "Make the last four bars heavier: more open low-string chug, kick unison, and a halftime feel." },
+		{ "Difficulty + realism", "Run tuxguitar_analyze_difficulty and tuxguitar_check_realism on track 1 and fix anything impossible or awkward." },
+		{ "Theme map", "Run tuxguitar_track_themes and tell me whether the song remembers its own material; if not, bring an earlier motif back somewhere." },
+		{ "Style match", "Run tuxguitar_style_match and tell me what this piece actually sounds like; then push it 20% closer to the nearest metal style." },
+		{ "Band review", "Review the score as five band personalities (composer with track_themes, critic with hook_check, producer with producer_notes, guitarist with check_realism and analyze_difficulty, listener with render_and_listen), hold a vote, and apply the changes that get two or more votes." },
 		{ "Listen and report", "Run tuxguitar_render_and_listen and tuxguitar_listen_stems, and report the loudest and quietest measures plus any mix problems." },
+		{ "Save a copy", "Open the save-copy dialog so I can save this take." },
 	};
 
 	private final TGContext context;
@@ -52,7 +62,7 @@ public class ChatDialog {
 
 	private UIWindow dialog;
 	private UITextArea transcript;
-	private UITextField input;
+	private UITextArea input;
 	private UIButton sendButton;
 	private UIButton stopButton;
 	private UIButton resetButton;
@@ -88,6 +98,7 @@ public class ChatDialog {
 		UIColor transcriptFg = uiFactory.createColor(224, 218, 200);
 		UIFont mono = uiFactory.createFont("Menlo", 12f, false, false);
 		UIFont monoSmall = uiFactory.createFont("Menlo", 10f, false, false);
+		UIFont monoInput = uiFactory.createFont("Menlo", 13f, false, false);
 
 		UITableLayout dialogLayout = new UITableLayout();
 		this.dialog = uiFactory.createWindow(uiParent, false, true);
@@ -161,6 +172,7 @@ public class ChatDialog {
 
 		this.modelSelect = uiFactory.createDropDownSelect(pickerRow);
 		this.modelSelect.addItem(new UISelectItem<String>("default", ""));
+		this.modelSelect.addItem(new UISelectItem<String>("fable 5", "claude-fable-5"));
 		this.modelSelect.addItem(new UISelectItem<String>("opus", "opus"));
 		this.modelSelect.addItem(new UISelectItem<String>("sonnet", "sonnet"));
 		this.modelSelect.addItem(new UISelectItem<String>("haiku", "haiku"));
@@ -175,10 +187,10 @@ public class ChatDialog {
 		dialogLayout.set(inputRow, 4, 1, UITableLayout.ALIGN_FILL,
 			UITableLayout.ALIGN_CENTER, true, false);
 
-		this.input = uiFactory.createTextField(inputRow);
-		this.input.setFont(mono);
+		this.input = uiFactory.createTextArea(inputRow, true, false);
+		this.input.setFont(monoInput);
 		inputLayout.set(this.input, 1, 1, UITableLayout.ALIGN_FILL,
-			UITableLayout.ALIGN_CENTER, true, false, 1, 1, 440f, null, null);
+			UITableLayout.ALIGN_FILL, true, false, 1, 1, 520f, 64f, null);
 		this.input.addKeyPressedListener(new UIKeyPressedListener() {
 			public void onKeyPressed(UIKeyEvent event) {
 				if (event.getKeyCombination().contains(UIKey.ENTER)) {
@@ -235,10 +247,18 @@ public class ChatDialog {
 		}
 		String prompt = this.input.getText();
 		if (prompt == null || prompt.trim().isEmpty()) {
+			if (prompt != null && !prompt.isEmpty()) {
+				this.input.setText("");
+			}
 			return;
 		}
 		final String message = prompt.trim();
 		this.input.setText("");
+		onUiThread(() -> {
+			if (this.input != null && !this.input.isDisposed()) {
+				this.input.setText("");
+			}
+		});
 		appendLine("> You: " + message + "\n");
 		setBusy(true);
 		setStatus("thinking...");
