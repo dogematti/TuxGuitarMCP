@@ -74,11 +74,30 @@ pub fn critique(measures: &[Measure], tuning: Tuning) -> CritiqueReport {
             total_intervals += 1;
         }
     }
-    let groove_consistency = interval_counts
-        .values()
-        .max()
-        .map(|&top| top as f64 / total_intervals.max(1) as f64)
-        .unwrap_or(1.0);
+    // Field finding: a gallop is bimodal (240-240-480...) yet perfectly
+    // consistent. Score the best REPEATING IOI pattern (period 1..=4), with
+    // the single-interval share as the period-1 case.
+    let iois: Vec<u64> = events
+        .windows(2)
+        .filter(|p| p[0].measure_index == p[1].measure_index)
+        .map(|p| p[1].offset.saturating_sub(p[0].offset))
+        .collect();
+    let groove_consistency = if iois.is_empty() {
+        1.0
+    } else {
+        (1..=4usize.min(iois.len()))
+            .map(|period| {
+                let pattern = &iois[..period];
+                let matches = iois
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, &v)| v == pattern[i % period])
+                    .count();
+                matches as f64 / iois.len() as f64
+            })
+            .fold(0.0f64, f64::max)
+    };
+    let _ = (&interval_counts, total_intervals); // superseded by periodicity
 
     // Density per measure.
     let mut per_measure: HashMap<usize, usize> = HashMap::new();
@@ -227,6 +246,56 @@ mod tests {
         assert!(report.velocity_std < 2.0);
         let text = describe(&report, "T1");
         assert!(text.contains("robotic dynamics"), "{text}");
+    }
+
+    #[test]
+    fn gallop_rhythm_scores_consistent_not_erratic() {
+        // Sixteenth-sixteenth-eighth gallop per beat: bimodal IOIs but a
+        // perfectly repeating period-3 pattern.
+        let mut steps = Vec::new();
+        for beat in 0..4u64 {
+            for (k, off) in [0u64, 240, 480].iter().enumerate() {
+                let _ = k;
+                steps.push((6u32, 0u32, 100u32, beat * 960 + off));
+            }
+        }
+        let measures = vec![Measure {
+            number: 1,
+            start_tick: 960,
+            key_signature: 0,
+            beats: steps
+                .iter()
+                .map(|&(string, fret, velocity, off)| Beat {
+                    start_tick: 960 + off,
+                    voices: vec![Voice {
+                        index: 0,
+                        duration: Duration {
+                            value: 16,
+                            dotted: false,
+                            double_dotted: false,
+                            tuplet: Tuplet {
+                                enters: 1,
+                                times: 1,
+                            },
+                        },
+                        is_rest: false,
+                        notes: vec![Note {
+                            string,
+                            fret,
+                            velocity,
+                            tied: false,
+                            effects: NoteEffects::default(),
+                        }],
+                    }],
+                })
+                .collect(),
+        }];
+        let report = critique(&measures, STANDARD);
+        assert!(
+            report.groove_consistency > 0.85,
+            "gallop must read as consistent, got {}",
+            report.groove_consistency
+        );
     }
 
     #[test]

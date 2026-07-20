@@ -89,10 +89,41 @@ fn measure_roots(measures: &[Measure], all_onsets: &[Onset]) -> Vec<u8> {
                 weight: 480,
             })
             .collect();
-        let root = detect_scales(&events)
-            .first()
-            .map(|c| c.root_pc)
-            .unwrap_or(previous);
+        // Field finding (modal-metal test): histogram-based detection misreads
+        // roots on b2-heavy material. Bass players follow the riff's low
+        // anchor — prefer the measure's lowest pitch class when it opens the
+        // measure or recurs.
+        let measure_events: Vec<&Onset> = all_onsets
+            .iter()
+            .filter(|o| o.measure_index == index)
+            .collect();
+        let low_anchor = measure_events
+            .iter()
+            .map(|o| o.pitch)
+            .min()
+            .map(|low| low % 12);
+        let anchor_is_strong = match low_anchor {
+            Some(anchor_pc) => {
+                let hits = measure_events
+                    .iter()
+                    .filter(|o| o.pitch % 12 == anchor_pc)
+                    .count();
+                let opens = measure_events
+                    .first()
+                    .map(|o| o.pitch % 12 == anchor_pc)
+                    .unwrap_or(false);
+                opens || hits * 4 >= measure_events.len()
+            }
+            None => false,
+        };
+        let root = if anchor_is_strong {
+            low_anchor.unwrap_or(previous)
+        } else {
+            detect_scales(&events)
+                .first()
+                .map(|c| c.root_pc)
+                .unwrap_or(previous)
+        };
         roots.push(root);
         previous = root;
     }

@@ -254,6 +254,11 @@ struct GenerateParams {
     /// "punk", or "halftime".
     #[serde(default)]
     style: Option<String>,
+    /// Write into this EXISTING track instead of creating a new one —
+    /// enables per-section generation (e.g. gallop drums for bars 1-8,
+    /// halftime for the breakdown) by calling per range.
+    #[serde(default)]
+    target_track: Option<u32>,
     /// False (default): preview what would be generated. True: create the
     /// new track and write the line — requires expected_revision.
     #[serde(default)]
@@ -302,6 +307,28 @@ struct HumanizeParams {
     #[serde(default)]
     amount: Option<u32>,
     /// False (default): preview only. True: apply — requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call.
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ImportMidiParams {
+    /// Name for the new track (default "Imported (AI)").
+    #[serde(default)]
+    track_name: Option<String>,
+    /// Tuning preset for the target track (default "6-string standard").
+    #[serde(default)]
+    preset: Option<String>,
+    /// Quantization grid denominator: 8, 16 (default) or 32.
+    #[serde(default)]
+    quantize: Option<u32>,
+    /// Which MIDI content track to import (1-based). Default: the densest.
+    #[serde(default)]
+    midi_track: Option<usize>,
+    /// False (default): preview. True: create the track and write.
     #[serde(default)]
     confirm: bool,
     /// The revision returned by the preview call.
@@ -1495,6 +1522,155 @@ impl TabMcp {
     }
 
     #[tool(
+        description = "Import a MIDI file as playable tablature: reads ~/.tuxguitar-mcp/import.mid (put the file there first — e.g. exported from Logic), quantizes onto the grid, assigns strings/frets with the fingering optimizer (chords re-voiced), and writes to a NEW track. Assumes 4/4; channel-10 drums are skipped; max 32 measures. TWO-STEP: preview, then confirm=true with expected_revision. Follow up with the AI-Ear loop to clean the draft.",
+        annotations(
+            title = "Import MIDI",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_import_midi(
+        &self,
+        params: Parameters<ImportMidiParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        use tabmcp_theory::fingering::{optimize_steps, CostModel, Step};
+        let Parameters(p) = params;
+        let grid = p.quantize.unwrap_or(16).clamp(4, 32);
+        let home = std::env::var("HOME").unwrap_or_default();
+        let midi_path = PathBuf::from(&home).join(".tuxguitar-mcp/import.mid");
+        let mut song_data = crate::import::parse_midi(&midi_path, grid, p.midi_track)
+            .map_err(|e| ErrorData::invalid_params(e, None))?;
+        let mut truncated = 0usize;
+        if song_data.measure_count > MAX_MEASURES_PER_READ as usize {
+            truncated = song_data.measure_count - MAX_MEASURES_PER_READ as usize;
+            song_data
+                .steps
+                .retain(|s| s.measure_index < MAX_MEASURES_PER_READ as usize);
+            song_data.note_count = song_data.steps.iter().map(|s| s.pitches.len()).sum();
+            song_data.measure_count = MAX_MEASURES_PER_READ as usize;
+        }
+
+        let strings = resolve_tuning(
+            &None,
+            &Some(
+                p.preset
+                    .clone()
+                    .unwrap_or_else(|| "6-string standard".into()),
+            ),
+        )?;
+        let tuning: Vec<(u32, u8)> = strings.iter().map(|s| (s.number, s.open_pitch)).collect();
+        let steps: Vec<Step> = song_data
+            .steps
+            .iter()
+            .map(|s| {
+                if s.pitches.len() == 1 {
+                    Step::Mono(s.pitches[0])
+                } else {
+                    Step::Chord(s.pitches.clone())
+                }
+            })
+            .collect();
+        let optimized =
+            optimize_steps(&steps, &tuning, 24, &CostModel::default()).map_err(|bad| {
+                ErrorData::invalid_params(
+                    format!(
+                        "{} imported moment(s) not playable on this tuning — try another preset",
+                        bad.len()
+                    ),
+                    None,
+                )
+            })?;
+        let measures = crate::import::build_measures(&song_data, &optimized.path);
+        let track_name = p
+            .track_name
+            .clone()
+            .unwrap_or_else(|| "Imported (AI)".into());
+
+        let song = self.fetch_song().await?;
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY — nothing changed. Would import {} notes across {} measure(s) \
+                     (MIDI track {} of {:?} available as (track, notes)) \
+                     from import.mid into a new track \"{track_name}\" ({} tuning, {}th-note \
+                     grid), fingered by the optimizer (effort {:.1}).{} To apply, call again \
+                     with confirm=true and expected_revision={}.",
+                    song_data.note_count,
+                    song_data.measure_count,
+                    song_data.chosen_track,
+                    song_data.available_tracks,
+                    tuning_names(&strings),
+                    grid,
+                    optimized.cost,
+                    if truncated > 0 {
+                        format!(" NOTE: {truncated} trailing measure(s) beyond the 32-measure cap were dropped.")
+                    } else {
+                        String::new()
+                    },
+                    song.revision,
+                ),
+                revision: song.revision,
+                measures_added: Some(song_data.measure_count as u32),
+                notes_before: Some(0),
+                notes_after: Some(song_data.note_count as u32),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let ping = self
+            .call_bridge(|client| client.ping())
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        if ping.revision != expected_revision {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "score changed: expected revision {expected_revision}, current is {} — \
+                     re-run the preview",
+                    ping.revision
+                ),
+                None,
+            ));
+        }
+        let name_for_create = track_name.clone();
+        let created = self
+            .call_bridge(move |client| client.create_track(&name_for_create, &strings, None, false))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let new_track = created
+            .get("trackNumber")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32;
+        let post_create = created
+            .get("newRevision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(new_track, 1, &measures, post_create)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied: imported {} notes into track {new_track} \"{track_name}\" \
+                 ({} measures). Run the AI-Ear loop to clean the draft. Undo takes two Cmd+Z \
+                 steps.",
+                result.notes_after, song_data.measure_count,
+            ),
+            revision: result.new_revision,
+            measures_added: Some(song_data.measure_count as u32),
+            notes_before: Some(0),
+            notes_after: Some(result.notes_after),
+        }))
+    }
+
+    #[tool(
         description = "Set a section marker on a measure (e.g. 'Verse', 'Chorus') — visible in TuxGuitar and usable for song-structure navigation. Empty title clears the marker.",
         annotations(title = "Set marker", read_only_hint = false, destructive_hint = false)
     )]
@@ -2151,21 +2327,33 @@ impl TabMcp {
             ));
         }
 
-        let name_for_create = new_track_name.clone();
-        let created = self
-            .call_bridge(move |client| {
-                client.create_track(&name_for_create, &target_strings, clef, percussion)
-            })
-            .await
-            .map_err(BridgeCallError::into_error_data)?;
-        let new_track = created
-            .get("trackNumber")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32;
-        let post_create_revision = created
-            .get("newRevision")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
+        let (new_track, post_create_revision) = if let Some(existing) = p.target_track {
+            if !song.tracks.iter().any(|t| t.number == existing) {
+                return Err(ErrorData::invalid_params(
+                    format!("target_track {existing} does not exist"),
+                    None,
+                ));
+            }
+            (existing, expected_revision)
+        } else {
+            let name_for_create = new_track_name.clone();
+            let created = self
+                .call_bridge(move |client| {
+                    client.create_track(&name_for_create, &target_strings, clef, percussion)
+                })
+                .await
+                .map_err(BridgeCallError::into_error_data)?;
+            (
+                created
+                    .get("trackNumber")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as u32,
+                created
+                    .get("newRevision")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            )
+        };
 
         let result = self
             .call_bridge(move |client| {
