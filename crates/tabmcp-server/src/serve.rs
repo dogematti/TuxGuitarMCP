@@ -604,6 +604,11 @@ struct GenerateRiffParams {
     to_measure: u32,
     /// Scale with root, e.g. "A phrygian dominant", "E harmonic minor".
     scale: String,
+    /// Recall a saved DNA-bank card by name: its register, density and
+    /// syncopation become defaults for unset parameters ("write something
+    /// in the family of my saved riff").
+    #[serde(default)]
+    dna: Option<String>,
     /// Style name: pulls the rubric's syncopation window as the default
     /// AND structured hints from your player-notes files (lines like
     /// "cells = gallop, tresillo", "density = 4-9",
@@ -703,6 +708,30 @@ struct PlanHarmonyParams {
     /// Bars per chord in the printed plan (default 2).
     #[serde(default)]
     bars_per_chord: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ApplyHarmonyParams {
+    /// Track to write into (1-based).
+    track_number: u32,
+    /// First measure of the progression (1-based).
+    from_measure: u32,
+    /// Scale with root, e.g. "A natural minor". Needs a 7-note scale.
+    scale: String,
+    /// Mood recipe or explicit degrees (same as plan_harmony).
+    progression: String,
+    /// Bars per chord (default 2).
+    #[serde(default)]
+    bars_per_chord: Option<u32>,
+    /// Rhythm: "chug" (palm-muted 8ths, accents on 1 and 3 - default),
+    /// "half" (ringing half notes) or "whole" (one ringing hit per bar).
+    #[serde(default)]
+    rhythm: Option<String>,
+    /// False (default): preview. True: apply - requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    expected_revision: Option<u64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -2999,6 +3028,75 @@ impl TabMcp {
         // Style defaults: rubric syncopation window + player-note hints
         // fill any parameter left unset.
         let mut p = p;
+        if let Some(dna_name) = p.dna.clone() {
+            let bank_path = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".tuxguitar-mcp")
+                .join("dna_bank.jsonl");
+            let card: Option<String> = std::fs::read_to_string(&bank_path)
+                .ok()
+                .and_then(|text| {
+                    text.lines()
+                        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                        .find(|v| {
+                            v.get("name").and_then(|n| n.as_str())
+                                == Some(dna_name.trim())
+                        })
+                        .and_then(|v| {
+                            v.get("card").and_then(|c| c.as_str()).map(String::from)
+                        })
+                });
+            let Some(card) = card else {
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "no DNA card named '{dna_name}' in the bank - list with                          tuxguitar_riff_dna list_bank=true"
+                    ),
+                    None,
+                ));
+            };
+            // Parse "Register: MIDI 45-57", "(8.0 notes/measure",
+            // "syncopation 25%" out of the card text.
+            if p.register_low.is_none() && p.register_high.is_none() {
+                if let Some(rest) = card.split("Register: MIDI ").nth(1) {
+                    if let Some((lo, hi)) = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|span| span.split_once('-'))
+                    {
+                        if let (Ok(lo), Ok(hi)) =
+                            (lo.parse::<u8>(), hi.trim_end_matches(|c: char| !c.is_ascii_digit()).parse::<u8>())
+                        {
+                            p.register_low = Some(tabmcp_theory::note_name(lo));
+                            p.register_high = Some(tabmcp_theory::note_name(hi));
+                        }
+                    }
+                }
+            }
+            if p.density.is_none() {
+                if let Some(rest) = card.split(" notes/measure").next() {
+                    if let Some(value) = rest.rsplit('(').next() {
+                        if let Ok(per_measure) = value.trim().parse::<f64>() {
+                            let mid = per_measure.round() as i64;
+                            p.density =
+                                Some(format!("{}-{}", (mid - 2).max(1), mid + 2));
+                        }
+                    }
+                }
+            }
+            if p.syncopation.is_none() {
+                if let Some(rest) = card.split("syncopation ").nth(1) {
+                    if let Some(value) = rest.split('%').next() {
+                        if let Ok(pct) = value.trim().parse::<f64>() {
+                            let s = pct / 100.0;
+                            p.syncopation = Some(format!(
+                                "{:.2}-{:.2}",
+                                (s - 0.15).max(0.0),
+                                (s + 0.15).min(1.0)
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         if let Some(style_name) = p.style.clone() {
             let hints = Self::player_note_hints(&style_name);
             if p.cells.is_none() {
@@ -3485,6 +3583,167 @@ impl TabMcp {
             &p.scale,
             p.bars_per_chord.unwrap_or(2).max(1),
         ))
+    }
+
+    #[tool(
+        description = "APPLY HARMONY — write a planned progression as power chords: same recipes as plan_harmony (mood or degrees), laid down as palm-muted chug 8ths with accents (default), ringing halves, or whole notes. Roots voice on the lowest reachable strings; each chord holds bars_per_chord bars. The fastest way from 'the chorus should lift' to actual notes. TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
+        annotations(title = "Apply harmony", read_only_hint = false, destructive_hint = true)
+    )]
+    async fn tuxguitar_apply_harmony(
+        &self,
+        params: Parameters<ApplyHarmonyParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let plan = tabmcp_theory::harmony::plan(&p.scale, &p.progression)
+            .map_err(|e| ErrorData::invalid_params(e, None))?;
+        let bars_per_chord = p.bars_per_chord.unwrap_or(2).max(1);
+        let track_number = p.track_number;
+        let from = p.from_measure;
+        let total_bars = plan.chords.len() as u32 * bars_per_chord;
+        if from == 0 || total_bars > MAX_MEASURES_PER_READ {
+            return Err(ErrorData::invalid_params(
+                format!("progression spans {total_bars} bars - too long or bad start"),
+                None,
+            ));
+        }
+        let song = self.fetch_song().await?;
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track_number} not found"), None)
+            })?;
+        let tuning: Vec<(u32, u8)> = track
+            .strings
+            .iter()
+            .map(|s| (s.number, s.open_pitch))
+            .collect();
+        // Lowest two strings carry the power chord.
+        let mut by_pitch: Vec<(u32, u8)> = tuning.clone();
+        by_pitch.sort_by_key(|&(_, open)| open);
+        let (low_string, low_open) = by_pitch[0];
+        let (next_string, next_open) = by_pitch[1];
+        let to = from + total_bars - 1;
+        let range = self
+            .call_bridge(move |client| client.read_measures(track_number, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let rhythm = p.rhythm.as_deref().unwrap_or("chug");
+        let mut measures: Vec<tabmcp_model::Measure> = Vec::new();
+        for (mi, template) in range.measures.iter().enumerate() {
+            let chord = &plan.chords[mi / bars_per_chord as usize];
+            // Root within an octave of the low string.
+            let root_fret = (chord.root_pc + 24 - (low_open % 12)) % 12;
+            let root_pitch = low_open as u32 + root_fret as u32;
+            let fifth_pitch = root_pitch + 7;
+            let fifth_fret = fifth_pitch.saturating_sub(next_open as u32);
+            let len = if mi + 1 < range.measures.len() {
+                range.measures[mi + 1]
+                    .start_tick
+                    .saturating_sub(template.start_tick)
+            } else {
+                3840
+            }
+            .max(960);
+            let onsets: Vec<(u64, u32, bool, bool)> = match rhythm {
+                // (offset, duration value, palm_mute, accent)
+                "whole" => vec![(0, 1, false, true)],
+                "half" => vec![(0, 2, false, true), (1920.min(len - 1), 2, false, false)],
+                _ => (0..len / 480)
+                    .map(|k| {
+                        let offset = k * 480;
+                        let accent = offset % 1920 == 0;
+                        (offset, 8u32, !accent, accent)
+                    })
+                    .collect(),
+            };
+            let mut beats = Vec::new();
+            for (offset, value, palm_mute, accent) in onsets {
+                if offset >= len {
+                    continue;
+                }
+                let mk_note = |string: u32, fret: u32| tabmcp_model::Note {
+                    string,
+                    fret,
+                    velocity: if accent { 112 } else { 96 },
+                    tied: false,
+                    effects: tabmcp_model::NoteEffects {
+                        palm_mute,
+                        accent,
+                        let_ring: !palm_mute && rhythm != "chug",
+                        ..tabmcp_model::NoteEffects::default()
+                    },
+                };
+                let mut notes = vec![mk_note(low_string, root_fret as u32)];
+                if fifth_fret <= 24 {
+                    notes.push(mk_note(next_string, fifth_fret));
+                }
+                beats.push(tabmcp_model::Beat {
+                    start_tick: template.start_tick + offset,
+                    voices: vec![tabmcp_model::Voice {
+                        index: 0,
+                        duration: tabmcp_model::Duration {
+                            value,
+                            dotted: false,
+                            double_dotted: false,
+                            tuplet: tabmcp_model::Tuplet { enters: 1, times: 1 },
+                        },
+                        is_rest: false,
+                        notes,
+                    }],
+                });
+            }
+            measures.push(tabmcp_model::Measure {
+                number: from + mi as u32,
+                start_tick: template.start_tick,
+                key_signature: template.key_signature,
+                beats,
+            });
+        }
+        let numerals: Vec<&str> = plan.chords.iter().map(|c| c.numeral.as_str()).collect();
+        let notes = count_notes(&measures);
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY - nothing changed. Would write {} as {rhythm} power \
+                     chords across measures {from}-{to} of track {track_number} ({notes} \
+                     notes, {bars_per_chord} bar(s) per chord). To apply, call again with \
+                     confirm=true and expected_revision={}.",
+                    numerals.join("-"),
+                    range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: Some(notes),
+                notes_after: Some(notes),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track_number, from, &measures, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied {} as {rhythm} power chords (track {track_number}, measures \
+                 {from}-{to}). The user can undo with Cmd+Z.",
+                numerals.join("-"),
+            ),
+            revision: result.new_revision,
+            measures_added: Some(result.measures_added),
+            notes_before: Some(notes),
+            notes_after: Some(result.notes_after),
+        }))
     }
 
     #[tool(
@@ -4310,6 +4569,21 @@ impl TabMcp {
                         }
                     }
                 }
+            }
+            // Field finding: fully-empty tracks polluted the scorecard with
+            // 0% flags (and contestants kept "fixing" them). Skip them.
+            let is_empty = range
+                .measures
+                .iter()
+                .all(|m| m.beats.iter().all(|b| {
+                    b.voices.iter().all(|v| v.is_rest || v.notes.is_empty())
+                }));
+            if is_empty {
+                out.push_str(&format!(
+                    "Track {} \"{}\": empty - skipped (delete it or write into it)\n",
+                    track.number, track.name
+                ));
+                continue;
             }
             let report = tabmcp_theory::critique::critique(&range.measures, &tuning);
             out.push_str(&tabmcp_theory::critique::describe(
