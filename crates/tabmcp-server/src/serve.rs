@@ -470,6 +470,29 @@ struct StyleGuideParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct VaryRiffParams {
+    /// Track (1-based).
+    track_number: u32,
+    /// Source range (1-based, inclusive).
+    from_measure: u32,
+    to_measure: u32,
+    /// "displace" or "retrograde".
+    transform: String,
+    /// displace only: shift in ticks (default 480 = an 8th; 240 = a 16th).
+    #[serde(default)]
+    amount: Option<u32>,
+    /// Where to write the result (default: in place at from_measure).
+    #[serde(default)]
+    dest_measure: Option<u32>,
+    /// False (default): preview. True: apply - requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call.
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct SetMarkerParams {
     /// Measure to mark (1-based).
     measure: u32,
@@ -2019,6 +2042,83 @@ impl TabMcp {
                     .join("\n")
             )),
         }
+    }
+
+    #[tool(
+        description = "Vary a riff mechanically: transform 'displace' shifts every onset by N ticks (default 480 = an 8th, wrapping within each measure) for rhythmic displacement; 'retrograde' reverses the pitch order through the original rhythm. Meter-aware. Write the result in place or to another location via dest_measure. TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
+        annotations(title = "Vary riff", read_only_hint = false, destructive_hint = true)
+    )]
+    async fn tuxguitar_vary_riff(
+        &self,
+        params: Parameters<VaryRiffParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let track = p.track_number;
+        let (from, to) = (p.from_measure, p.to_measure);
+        if from == 0 || to < from || to - from + 1 > MAX_MEASURES_PER_READ {
+            return Err(ErrorData::invalid_params("invalid range", None));
+        }
+        let range = self
+            .call_bridge(move |client| client.read_measures(track, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let mut measures = range.measures;
+        match p.transform.as_str() {
+            "displace" => {
+                tabmcp_theory::transforms::displace(&mut measures, p.amount.unwrap_or(480) as u64)
+            }
+            "retrograde" => tabmcp_theory::transforms::retrograde(&mut measures),
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!("unknown transform '{other}'; available: displace, retrograde"),
+                    None,
+                ))
+            }
+        }
+        let dest = p.dest_measure.unwrap_or(from);
+        for (i, measure) in measures.iter_mut().enumerate() {
+            measure.number = dest + i as u32;
+        }
+        let notes = count_notes(&measures);
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY - nothing changed. Would apply '{}' to measures {from}-{to} \
+                     of track {track} and write {notes} notes at measure {dest}. To apply, \
+                     call again with confirm=true and expected_revision={}.",
+                    p.transform, range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: Some(notes),
+                notes_after: Some(notes),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track, dest, &measures, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied '{}' to measures {from}-{to} of track {track}, written at measure \
+                 {dest}. The user can undo with Cmd+Z.",
+                p.transform,
+            ),
+            revision: result.new_revision,
+            measures_added: Some(result.measures_added),
+            notes_before: Some(notes),
+            notes_after: Some(result.notes_after),
+        }))
     }
 
     #[tool(
