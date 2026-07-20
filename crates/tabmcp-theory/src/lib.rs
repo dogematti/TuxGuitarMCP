@@ -2,6 +2,7 @@
 //! analysis lands here in Phase 3+.
 
 pub mod analysis;
+pub mod fingering;
 pub mod pitch;
 
 pub use analysis::{

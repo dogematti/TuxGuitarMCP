@@ -17,11 +17,13 @@ See [PLAN.md](PLAN.md) for the full architecture and
 Phase 4 complete — AI clients can read, analyze, **and write** the open score
 in TuxGuitar 2.0.1:
 
-- **`tabmcp serve`** exposes 11 MCP tools over stdio — reading
+- **`tabmcp serve`** exposes 12 MCP tools over stdio — reading
   (`tuxguitar_get_bridge_status`, `tuxguitar_get_score_summary`,
   `tuxguitar_get_measures`, `tuxguitar_get_selection`), analysis
   (`tuxguitar_detect_key_and_scale`, `tuxguitar_explain_selection`), and
   editing (`tuxguitar_replace_measures`, `tuxguitar_transpose`,
+  `tuxguitar_optimize_fingering`, `tuxguitar_create_track`,
+  `tuxguitar_change_tuning`, `tuxguitar_play`/`tuxguitar_stop`,
   `tuxguitar_undo`, `tuxguitar_redo`, `tuxguitar_save_copy`)
 - Every edit is **two-step** (preview → confirm with the previewed revision),
   **revision-checked** (rejected if the score changed in between), **atomic**,
@@ -31,6 +33,13 @@ in TuxGuitar 2.0.1:
 - The theory engine detects scales/tonal centers and produces plain-language
   explanations; transposition is string/fret-aware and refuses edits that
   would fall off the fretboard
+- **Fingering optimizer**: models the passage as a path-search problem
+  (per-note string/fret candidates -> transition costs -> dynamic
+  programming), with a swappable cost model (fret movement, position
+  shifts, string skips, open-string preference, optional user fret range)
+  and *explanations* — every result says WHY the chosen fingering is
+  easier (e.g. "81% less hand effort; 2 position shifts eliminated;
+  uses 3 open strings")
 
 ## Using with an MCP client
 

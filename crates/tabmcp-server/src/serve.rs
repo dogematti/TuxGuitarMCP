@@ -210,6 +210,31 @@ struct EditOutcome {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct OptimizeFingeringParams {
+    /// Track number (1-based). Omit to use the active selection's track.
+    #[serde(default)]
+    track_number: Option<u32>,
+    /// First measure. Omit to use the selection, falling back to the whole track.
+    #[serde(default)]
+    from_measure: Option<u32>,
+    /// Last measure (inclusive).
+    #[serde(default)]
+    to_measure: Option<u32>,
+    /// False (default): preview only. True: apply — requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call.
+    #[serde(default)]
+    expected_revision: Option<u64>,
+    /// Lowest fret allowed for fretted notes (open strings stay allowed).
+    #[serde(default)]
+    min_fret: Option<u32>,
+    /// Highest fret allowed for fretted notes (e.g. 12 to stay low on the neck).
+    #[serde(default)]
+    max_fret_limit: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct CreateTrackParams {
     /// Track name shown in TuxGuitar (e.g. "7-String Rhythm").
     name: String,
@@ -752,6 +777,232 @@ impl TabMcp {
             measures_added: None,
             notes_before: Some(note_count),
             notes_after: Some(note_count),
+        }))
+    }
+
+    #[tool(
+        description = "Optimize fret positions of a monophonic passage: finds the lowest-effort string/fret path (dynamic programming over hand movement, position shifts, string skips, open strings) without changing any pitches. Defaults to the user's active selection. TWO-STEP SAFETY: preview (reports the effort improvement), then confirm=true with expected_revision. Fails on polyphonic passages (chords) in this version.",
+        annotations(
+            title = "Optimize fingering",
+            read_only_hint = false,
+            destructive_hint = true
+        )
+    )]
+    async fn tuxguitar_optimize_fingering(
+        &self,
+        params: Parameters<OptimizeFingeringParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let (song, selection) = self
+            .call_bridge(|client| {
+                let song = client.read_song()?;
+                let selection = client.read_selection()?;
+                Ok((song, selection))
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+
+        let track_number = p
+            .track_number
+            .or(if selection.active {
+                selection.track_number
+            } else {
+                None
+            })
+            .unwrap_or(1);
+        let song_len = song.headers.len() as u32;
+        let (from, to) = match (p.from_measure, p.to_measure) {
+            (Some(from), Some(to)) => (from, to),
+            (Some(from), None) => (from, from),
+            (None, _) if selection.active => (
+                selection.from_measure.unwrap_or(1),
+                selection.to_measure.unwrap_or(song_len),
+            ),
+            _ => (1, song_len.max(1)),
+        };
+        if from == 0 || to < from || to > song_len {
+            return Err(ErrorData::invalid_params(
+                format!("invalid measure range {from}-{to}: the score has measures 1-{song_len}"),
+                None,
+            ));
+        }
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track_number} does not exist"), None)
+            })?;
+        if track.is_percussion {
+            return Err(ErrorData::invalid_params(
+                "cannot optimize fingering on a percussion track",
+                None,
+            ));
+        }
+        let tuning: Vec<(u32, u8)> = track
+            .strings
+            .iter()
+            .map(|s| (s.number, s.open_pitch))
+            .collect();
+        let open_by_string: std::collections::HashMap<u32, u8> = tuning.iter().copied().collect();
+        let max_fret = if track.max_fret > 0 {
+            track.max_fret
+        } else {
+            24
+        };
+
+        let range = self
+            .call_bridge(move |client| client.read_measures(track_number, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let mut measures = range.measures;
+
+        // Collect the monophonic pitch sequence + current positions.
+        let mut pitches: Vec<u8> = Vec::new();
+        let mut old_positions: Vec<tabmcp_theory::fingering::Position> = Vec::new();
+        for measure in &measures {
+            for beat in &measure.beats {
+                let sounding: Vec<&tabmcp_model::Note> = beat
+                    .voices
+                    .iter()
+                    .flat_map(|v| &v.notes)
+                    .filter(|n| !n.tied)
+                    .collect();
+                if sounding.len() > 1 {
+                    return Err(ErrorData::invalid_params(
+                        format!(
+                            "measure {}, tick {}: {} simultaneous notes — this version \
+                             optimizes monophonic lines only; narrow the range to a \
+                             single-note passage",
+                            measure.number,
+                            beat.start_tick,
+                            sounding.len()
+                        ),
+                        None,
+                    ));
+                }
+                if let Some(note) = sounding.first() {
+                    let open = open_by_string.get(&note.string).copied().ok_or_else(|| {
+                        ErrorData::internal_error(
+                            format!("note on unknown string {}", note.string),
+                            None,
+                        )
+                    })?;
+                    pitches.push(open.saturating_add(note.fret as u8));
+                    old_positions.push(tabmcp_theory::fingering::Position {
+                        string_number: note.string,
+                        fret: note.fret,
+                    });
+                }
+            }
+        }
+        if pitches.is_empty() {
+            return Err(ErrorData::invalid_params(
+                "the selected passage contains no notes to optimize",
+                None,
+            ));
+        }
+
+        let mut model = tabmcp_theory::fingering::CostModel::default();
+        if p.min_fret.is_some() || p.max_fret_limit.is_some() {
+            model.fret_range = Some((
+                p.min_fret.unwrap_or(0),
+                p.max_fret_limit.unwrap_or(max_fret).min(max_fret),
+            ));
+        }
+        let optimized =
+            tabmcp_theory::fingering::optimize_monophonic(&pitches, &tuning, max_fret, &model)
+                .map_err(|indices| {
+                    ErrorData::invalid_params(
+                        format!(
+                            "{} note(s) not playable within the given constraints \
+                             (tuning/fret range)",
+                            indices.len()
+                        ),
+                        None,
+                    )
+                })?;
+        let old_breakdown = tabmcp_theory::fingering::breakdown(&old_positions, &model);
+        let new_breakdown = tabmcp_theory::fingering::breakdown(&optimized.path, &model);
+        let reasons = tabmcp_theory::fingering::explain_improvement(&old_breakdown, &new_breakdown)
+            .join("; ");
+        let old_cost = old_breakdown.total_cost;
+        let changed = optimized
+            .path
+            .iter()
+            .zip(&old_positions)
+            .filter(|(new, old)| new != old)
+            .count();
+
+        // Write the optimized positions back into the measures.
+        let mut cursor = 0usize;
+        let mut last_position: Option<tabmcp_theory::fingering::Position> = None;
+        for measure in &mut measures {
+            for beat in &mut measure.beats {
+                for voice in &mut beat.voices {
+                    for note in &mut voice.notes {
+                        let position = if note.tied {
+                            last_position // a tie continues on the same string
+                        } else {
+                            let p = optimized.path.get(cursor).copied();
+                            cursor += 1;
+                            last_position = p;
+                            p
+                        };
+                        if let Some(p) = position {
+                            note.string = p.string_number;
+                            note.fret = p.fret;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY — nothing changed. Would re-finger {changed} of {} notes in \
+                     measures {from}-{to} of track {track_number}; hand-effort cost {:.1} -> \
+                     {:.1} (lower is easier). Why: {reasons}. All pitches stay identical. To \
+                     apply, call again with confirm=true and expected_revision={}.",
+                    pitches.len(),
+                    old_cost,
+                    optimized.cost,
+                    range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: Some(pitches.len() as u32),
+                notes_after: Some(pitches.len() as u32),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track_number, from, &measures, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied: re-fingered {changed} of {} notes in measures {from}-{to} of track \
+                 {track_number} (hand-effort {:.1} -> {:.1}); pitches unchanged. The user can \
+                 undo with Cmd+Z.",
+                pitches.len(),
+                old_cost,
+                optimized.cost,
+            ),
+            revision: result.new_revision,
+            measures_added: None,
+            notes_before: Some(pitches.len() as u32),
+            notes_after: Some(pitches.len() as u32),
         }))
     }
 
