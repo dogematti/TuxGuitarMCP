@@ -100,7 +100,9 @@ can write expressive tablature, not just note grids.
   two-call confirm dance, where clients support it)
 - Streaming playback position notifications during play
 
-**Virtual ear (AI feedback loop)**
+**Virtual ear (AI feedback loop)** — v1 shipped as tuxguitar_analyze_arrangement
+(symbolic cross-track listening: dissonance clashes, register masking,
+rhythmic tightness, empty bars, velocity balance); v2 below adds audio DSP.
 - `render_and_analyze`: headless MIDI export -> fluidsynth render -> DSP
   feature extraction (onset alignment, per-track loudness curves, spectral
   balance, low-end mud detection) -> structured report the AI edits from.

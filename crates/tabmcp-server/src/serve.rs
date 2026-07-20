@@ -1225,6 +1225,56 @@ impl TabMcp {
     }
 
     #[tool(
+        description = "The 'virtual ear': listen to the whole arrangement the way a producer reads a session. Analyzes ALL tracks together over a measure range (default: whole song, max 32 measures) and reports harsh cross-track dissonances (minor 2nds / tritones at exact measure+tick), register overlaps that cause masking, rhythmic tightness between parts, empty/sparse measures, and velocity balance. Use it after composing/generating to hear problems, then fix them with the edit tools.",
+        annotations(title = "Analyze arrangement", read_only_hint = true)
+    )]
+    async fn tuxguitar_analyze_arrangement(
+        &self,
+        params: Parameters<AnalysisScopeParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let song = self.fetch_song().await?;
+        let song_len = song.headers.len() as u32;
+        let from = p.from_measure.unwrap_or(1);
+        let to = p
+            .to_measure
+            .unwrap_or(song_len)
+            .min(from + MAX_MEASURES_PER_READ - 1);
+        if from == 0 || to < from || to > song_len {
+            return Err(ErrorData::invalid_params(
+                format!("invalid measure range {from}-{to}: the score has measures 1-{song_len}"),
+                None,
+            ));
+        }
+
+        let mut inputs = Vec::new();
+        for track in &song.tracks {
+            let track_number = track.number;
+            let range = self
+                .call_bridge(move |client| client.read_measures(track_number, from, to))
+                .await
+                .map_err(BridgeCallError::into_error_data)?;
+            inputs.push(tabmcp_theory::arrangement::TrackInput {
+                number: track.number,
+                name: track.name.clone(),
+                is_percussion: track.is_percussion,
+                tuning: track
+                    .strings
+                    .iter()
+                    .map(|s| (s.number, s.open_pitch))
+                    .collect(),
+                measures: range.measures,
+            });
+        }
+        let report = tabmcp_theory::arrangement::analyze_arrangement(&inputs);
+        Ok(format!(
+            "Arrangement analysis, measures {from}-{to}, {} track(s):\n\n{}",
+            inputs.len(),
+            tabmcp_theory::arrangement::describe(&report),
+        ))
+    }
+
+    #[tool(
         description = "Change the tempo (BPM): the whole song by default, or from a given measure to the end (for tempo ramps, call once per section). NOTE: tempo changes are not in TuxGuitar's undo stack (the app's own tempo dialog isn't undoable either) — call again with the old BPM to revert.",
         annotations(title = "Set tempo", read_only_hint = false, destructive_hint = false)
     )]

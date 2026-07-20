@@ -2,6 +2,7 @@
 //! analysis lands here in Phase 3+.
 
 pub mod analysis;
+pub mod arrangement;
 pub mod fingering;
 pub mod generation;
 pub mod pitch;
