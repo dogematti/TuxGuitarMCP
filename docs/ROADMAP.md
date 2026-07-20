@@ -24,6 +24,18 @@
 - **Golden .tg suite**: real files with odd meters, tuplets, ties, repeats,
   both voices — checked-in expected JSON on both sides.
 
+### P2.5 — Import pipeline (queued after the current field test)
+- **Stage 1: import_midi** — parse a .mid from the fixed scratch path
+  (midly is already a dependency), beat-quantize onto the tick grid,
+  string/fret via the fingering optimizer, preview/confirm into a new
+  track. Closes the Logic <-> TuxGuitar loop in both directions.
+- **Stage 2: audio front-end** — external helper wrapping Demucs
+  (htdemucs_6s guitar stem) + Spotify basic-pitch (note events incl.
+  pitch bends -> our bend objects) producing the MIDI Stage 1 consumes;
+  the AI-Ear refinement loop cleans the transcription draft.
+  Expectation: usable drafts from DI/isolated stems; rough sketches from
+  dense metal mixes.
+
 ### P3 — Expressiveness
 - **Full effect parameters on write**: grace (fret/duration), trill,
   tremolo picking speed, tremolo-bar curves (read as flags today).
