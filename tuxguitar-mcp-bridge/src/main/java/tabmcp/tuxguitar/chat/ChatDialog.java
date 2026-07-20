@@ -141,7 +141,14 @@ public class ChatDialog {
 		statusLayout.set(this.statusLabel, 1, 2, UITableLayout.ALIGN_LEFT,
 			UITableLayout.ALIGN_CENTER, true, false);
 
-		this.templateSelect = uiFactory.createDropDownSelect(statusRow);
+		// Right column: quick actions stacked over the model picker.
+		UITableLayout rightLayout = new UITableLayout(0f);
+		UIPanel rightPanel = uiFactory.createPanel(statusRow, false);
+		rightPanel.setLayout(rightLayout);
+		statusLayout.set(rightPanel, 1, 3, UITableLayout.ALIGN_RIGHT,
+			UITableLayout.ALIGN_CENTER, false, false);
+
+		this.templateSelect = uiFactory.createDropDownSelect(rightPanel);
 		for (String[] template : TEMPLATES) {
 			this.templateSelect.addItem(new UISelectItem<String>(template[0], template[1]));
 		}
@@ -155,23 +162,29 @@ public class ChatDialog {
 				}
 			}
 		});
-		statusLayout.set(this.templateSelect, 1, 3, UITableLayout.ALIGN_RIGHT,
-			UITableLayout.ALIGN_CENTER, false, false, 1, 1, 170f, null, null);
+		rightLayout.set(this.templateSelect, 1, 1, UITableLayout.ALIGN_FILL,
+			UITableLayout.ALIGN_CENTER, true, false, 1, 1, 210f, null, null);
 
-		UILabel modelLabel = uiFactory.createLabel(statusRow);
+		UITableLayout modelRowLayout = new UITableLayout(0f);
+		UIPanel modelRow = uiFactory.createPanel(rightPanel, false);
+		modelRow.setLayout(modelRowLayout);
+		rightLayout.set(modelRow, 2, 1, UITableLayout.ALIGN_FILL,
+			UITableLayout.ALIGN_CENTER, true, false);
+
+		UILabel modelLabel = uiFactory.createLabel(modelRow);
 		modelLabel.setText("model:");
-		statusLayout.set(modelLabel, 1, 4, UITableLayout.ALIGN_RIGHT,
+		modelRowLayout.set(modelLabel, 1, 1, UITableLayout.ALIGN_LEFT,
 			UITableLayout.ALIGN_CENTER, false, false);
 
-		this.modelSelect = uiFactory.createDropDownSelect(statusRow);
+		this.modelSelect = uiFactory.createDropDownSelect(modelRow);
 		this.modelSelect.addItem(new UISelectItem<String>("default", ""));
 		this.modelSelect.addItem(new UISelectItem<String>("fable 5", "claude-fable-5"));
 		this.modelSelect.addItem(new UISelectItem<String>("opus", "opus"));
 		this.modelSelect.addItem(new UISelectItem<String>("sonnet", "sonnet"));
 		this.modelSelect.addItem(new UISelectItem<String>("haiku", "haiku"));
 		this.modelSelect.setSelectedValue("");
-		statusLayout.set(this.modelSelect, 1, 5, UITableLayout.ALIGN_RIGHT,
-			UITableLayout.ALIGN_CENTER, false, false, 1, 1, 110f, null, null);
+		modelRowLayout.set(this.modelSelect, 1, 2, UITableLayout.ALIGN_FILL,
+			UITableLayout.ALIGN_CENTER, true, false, 1, 1, 140f, null, null);
 
 		// Input row.
 		UITableLayout inputLayout = new UITableLayout(0f);
