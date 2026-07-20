@@ -1,0 +1,12 @@
+# Rust
+target/
+# (Cargo.lock is committed — workspace contains binaries)
+
+# Java / Maven
+tuxguitar-mcp-bridge/target/
+
+# OS
+.DS_Store
+
+# Local runtime state
+*.log
