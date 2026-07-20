@@ -497,6 +497,11 @@ struct StyleGuideParams {
     /// Style name (e.g. "djent", "doom", "blues rock"). Omit to list all.
     #[serde(default)]
     style: Option<String>,
+    /// Tuning for tuning-specific player notes (preset name like
+    /// "7-string A standard"). Omit to auto-detect from the open score's
+    /// first melodic track.
+    #[serde(default)]
+    tuning: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -2226,26 +2231,91 @@ impl TabMcp {
         params: Parameters<StyleGuideParams>,
     ) -> Result<String, ErrorData> {
         let Parameters(p) = params;
-        fn player_notes(style_name: &str) -> Option<String> {
-            let slug = style_name.trim().to_ascii_lowercase().replace(' ', "-");
-            let path = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        // Tuning slug for tuning-specific notes: explicit param, else
+        // auto-detected from the open score's first melodic track
+        // (best-effort - no tuning notes when the bridge is down).
+        let tuning_slug: Option<String> = match &p.tuning {
+            Some(name) => Some(name.trim().to_ascii_lowercase().replace(' ', "-")),
+            None => match self.fetch_song().await {
+                Ok(song) => song
+                    .tracks
+                    .iter()
+                    .find(|t| !t.is_percussion)
+                    .and_then(|t| {
+                        let pitches: Vec<u8> =
+                            t.strings.iter().map(|s| s.open_pitch).collect();
+                        tabmcp_theory::TUNING_PRESETS
+                            .iter()
+                            .find(|(_, preset)| *preset == pitches.as_slice())
+                            .map(|(name, _)| {
+                                name.to_ascii_lowercase().replace(' ', "-")
+                            })
+                    }),
+                Err(_) => None,
+            },
+        };
+        fn slug_of(style_name: &str) -> String {
+            style_name.trim().to_ascii_lowercase().replace(' ', "-")
+        }
+        fn notes_dir() -> PathBuf {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default())
                 .join(".tuxguitar-mcp")
                 .join("styles")
-                .join(format!("{slug}.md"));
+        }
+        fn read_notes(path: PathBuf) -> Option<String> {
             std::fs::read_to_string(path).ok().and_then(|s| {
                 let trimmed = s.trim().to_string();
                 (!trimmed.is_empty()).then_some(trimmed)
             })
         }
-        fn with_notes(base: String, style_name: &str) -> String {
-            match player_notes(style_name) {
-                Some(notes) => format!(
-                    "{base}\nPLAYER NOTES (the user's own vocabulary - follow these over \
-                     the generic recipe when they conflict):\n{notes}\n"
-                ),
-                None => base,
-            }
+        fn player_notes(style_name: &str) -> Option<String> {
+            read_notes(notes_dir().join(format!("{}.md", slug_of(style_name))))
         }
+        /// Tuning-specific notes: `<style>.<tuning>.md` where the file's
+        /// tuning part is a prefix of the full tuning slug (so
+        /// `metalcore.7-string-a.md` matches "7-string-a-standard").
+        fn tuning_notes(style_name: &str, tuning_slug: &str) -> Option<(String, String)> {
+            let style_slug = slug_of(style_name);
+            let entries = std::fs::read_dir(notes_dir()).ok()?;
+            let mut best: Option<(usize, String, PathBuf)> = None;
+            for entry in entries.flatten() {
+                let file = entry.file_name().to_string_lossy().to_string();
+                let Some(rest) = file.strip_prefix(&format!("{style_slug}.")) else {
+                    continue;
+                };
+                let Some(tuning_part) = rest.strip_suffix(".md") else {
+                    continue;
+                };
+                if tuning_slug.starts_with(tuning_part)
+                    && best
+                        .as_ref()
+                        .map(|(len, _, _)| tuning_part.len() > *len)
+                        .unwrap_or(true)
+                {
+                    best = Some((tuning_part.len(), tuning_part.to_string(), entry.path()));
+                }
+            }
+            let (_, part, path) = best?;
+            read_notes(path).map(|notes| (part, notes))
+        }
+        let with_notes = |base: String, style_name: &str| -> String {
+            let mut out = base;
+            if let Some(notes) = player_notes(style_name) {
+                out.push_str(&format!(
+                    "\nPLAYER NOTES (the user's own vocabulary - follow these over \
+                     the generic recipe when they conflict):\n{notes}\n"
+                ));
+            }
+            if let Some(slug) = &tuning_slug {
+                if let Some((part, notes)) = tuning_notes(style_name, slug) {
+                    out.push_str(&format!(
+                        "\nPLAYER NOTES for this tuning ({part}) - most specific, \
+                         wins over everything above on conflict:\n{notes}\n"
+                    ));
+                }
+            }
+            out
+        };
         match p.style.as_deref() {
             Some(spec) if spec.contains('%') || spec.contains('+') || spec.contains(',') => {
                 tabmcp_theory::styles::parse_blend(spec)
@@ -2272,12 +2342,25 @@ impl TabMcp {
             Some(name) => tabmcp_theory::styles::style_guide(name)
                 .map(|g| with_notes(tabmcp_theory::styles::describe(g), g.name))
                 .or_else(|| {
-                    // A player-notes file alone defines a custom style.
-                    player_notes(name).map(|notes| {
-                        format!(
-                            "CUSTOM STYLE: {name} (user-defined - no built-in rubric)\n\
-                             PLAYER NOTES:\n{notes}\n"
-                        )
+                    // A player-notes file alone defines a custom style
+                    // (base file, tuning-specific file, or both).
+                    let base = player_notes(name);
+                    let tuned = tuning_slug
+                        .as_ref()
+                        .and_then(|slug| tuning_notes(name, slug));
+                    (base.is_some() || tuned.is_some()).then(|| {
+                        let mut out = format!(
+                            "CUSTOM STYLE: {name} (user-defined - no built-in rubric)\n"
+                        );
+                        if let Some(notes) = base {
+                            out.push_str(&format!("PLAYER NOTES:\n{notes}\n"));
+                        }
+                        if let Some((part, notes)) = tuned {
+                            out.push_str(&format!(
+                                "PLAYER NOTES for this tuning ({part}):\n{notes}\n"
+                            ));
+                        }
+                        out
                     })
                 })
                 .ok_or_else(|| {
@@ -2305,7 +2388,15 @@ impl TabMcp {
                             .flatten()
                             .filter_map(|e| {
                                 let name = e.file_name().to_string_lossy().to_string();
-                                name.strip_suffix(".md").map(|s| s.replace('-', " "))
+                                let stem = name.strip_suffix(".md")?;
+                                Some(match stem.split_once('.') {
+                                    Some((style, tuning)) => format!(
+                                        "{} [{}]",
+                                        style.replace('-', " "),
+                                        tuning.replace('-', " ")
+                                    ),
+                                    None => stem.replace('-', " "),
+                                })
                             })
                             .collect()
                     })
