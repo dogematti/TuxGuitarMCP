@@ -151,8 +151,17 @@ pub fn generate_bassline(
     }
     let roots = measure_roots(source, &all_onsets);
 
-    // Lowest playable pitch per pitch class within the bass range.
-    let bass_low = bass_tuning.iter().map(|&(_, p)| p).min().unwrap_or(28);
+    // Lowest pitch we allow the bass to sit on. The tuning may reach E1
+    // (MIDI 28), but common GM soundfonts (including TuxGuitar's own
+    // MagicSFver2) do not voice that bottom octave — a bass written there
+    // renders silent. Keep roots at E2 (40) or above.
+    const BASS_FLOOR: u8 = 40;
+    let bass_low = bass_tuning
+        .iter()
+        .map(|&(_, p)| p)
+        .min()
+        .unwrap_or(28)
+        .max(BASS_FLOOR);
     let to_bass_pitch = |pc: u8| -> u8 {
         let mut pitch = pc % 12;
         while pitch < bass_low {
@@ -165,6 +174,15 @@ pub fn generate_bassline(
     for (i, onset) in all_onsets.iter().enumerate() {
         let root = roots[onset.measure_index];
         let mut pitch = to_bass_pitch(root);
+        // Static harmony must not become a one-note drone: walk to the
+        // fifth on the second half of the measure when the root persists.
+        let root_unchanged = roots
+            .get(onset.measure_index.wrapping_sub(1))
+            .map(|&prev| prev == root && onset.measure_index > 0)
+            .unwrap_or(false);
+        if root_unchanged && (1920..2880).contains(&onset.offset) {
+            pitch = to_bass_pitch((root + 7) % 12);
+        }
         // Chromatic approach into a new root on the last onset of a measure.
         let is_last_of_measure = all_onsets
             .get(i + 1)
@@ -495,6 +513,58 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bassline_stays_above_the_soundfont_floor_and_moves_on_static_harmony() {
+        // Single-root source (all E, full 8-eighth measures) across two
+        // measures: the old generator parked every note on E1, which is
+        // silent in common soundfonts.
+        let source_measures: Vec<Measure> = (1..=2u32)
+            .map(|n| {
+                let start = 960 * (1 + 4 * (n as u64 - 1));
+                Measure {
+                    number: n,
+                    start_tick: start,
+                    key_signature: 0,
+                    beats: (0..8u64)
+                        .map(|j| Beat {
+                            start_tick: start + j * 480,
+                            voices: vec![Voice {
+                                index: 0,
+                                duration: eighth(),
+                                is_rest: false,
+                                notes: vec![Note {
+                                    string: 6,
+                                    fret: 0,
+                                    velocity: 95,
+                                    tied: false,
+                                    effects: NoteEffects::default(),
+                                }],
+                            }],
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        let (measures, _) =
+            generate_bassline(&source_measures, STANDARD, BASS, 24).expect("generates");
+        let open: std::collections::HashMap<u32, u8> = BASS.iter().copied().collect();
+        let pitches: Vec<u8> = measures
+            .iter()
+            .flat_map(|m| &m.beats)
+            .flat_map(|b| &b.voices)
+            .flat_map(|v| &v.notes)
+            .map(|n| open[&n.string] + n.fret as u8)
+            .collect();
+        assert!(
+            pitches.iter().all(|&p| p >= 40),
+            "bass must stay at E2+ (soundfont floor): {pitches:?}"
+        );
+        assert!(
+            pitches.iter().any(|&p| p % 12 == 11),
+            "static harmony should walk to the fifth (B over E): {pitches:?}"
+        );
     }
 
     #[test]
