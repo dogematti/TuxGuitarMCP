@@ -174,6 +174,10 @@ public class McpSocketServer {
 				return this.service.changeTuning(params);
 			case "set_repeat":
 				return this.service.setRepeat(params);
+			case "set_tempo":
+				return this.service.setTempo(params);
+			case "export_song":
+				return this.service.exportSong(params);
 			case "play":
 				return this.service.play();
 			case "stop":

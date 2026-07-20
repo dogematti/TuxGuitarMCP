@@ -100,6 +100,13 @@ can write expressive tablature, not just note grids.
   two-call confirm dance, where clients support it)
 - Streaming playback position notifications during play
 
+**Virtual ear (AI feedback loop)**
+- `render_and_analyze`: headless MIDI export -> fluidsynth render -> DSP
+  feature extraction (onset alignment, per-track loudness curves, spectral
+  balance, low-end mud detection) -> structured report the AI edits from.
+  Claude can't hear audio directly, but for symbolic music the score +
+  rendered-mix features cover nearly everything audible.
+
 **Far future / research**
 - Audio-to-tab sketching (hum a riff, get a draft tab)
 - Style transfer ("re-voice this like a jazz comper / like doom metal")

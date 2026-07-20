@@ -379,6 +379,99 @@ public class BridgeService {
 		tuning.processOnCurrentThread();
 	}
 
+	public JsonObject setTempo(JsonObject params) throws RpcException {
+		if (!params.has("bpm")) {
+			throw new RpcException(RpcException.INVALID_RANGE, "bpm is required");
+		}
+		int bpm = params.get("bpm").getAsInt();
+		if (bpm < 1 || bpm > 320) {
+			throw new RpcException(RpcException.INVALID_RANGE, "bpm must be 1..320");
+		}
+		int fromMeasure = params.has("fromMeasure") ? params.get("fromMeasure").getAsInt() : 0;
+
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		app.tuxguitar.song.models.TGMeasureHeader header = null;
+		java.util.Iterator<app.tuxguitar.song.models.TGMeasureHeader> it = song.getMeasureHeaders();
+		while (it.hasNext()) {
+			app.tuxguitar.song.models.TGMeasureHeader candidate = it.next();
+			if (header == null && fromMeasure <= 0) {
+				header = candidate; // whole song: any header satisfies the action
+			}
+			if (candidate.getNumber() == fromMeasure) {
+				header = candidate;
+			}
+		}
+		if (header == null) {
+			throw new RpcException(RpcException.INVALID_RANGE, "measure " + fromMeasure + " not found");
+		}
+
+		// action.composition.change-tempo-range (undo-configured, lockable):
+		// APPLY_TO_ALL=1 for the whole song, APPLY_TO_END=2 from a measure on.
+		app.tuxguitar.editor.action.TGActionProcessor tempo =
+			new app.tuxguitar.editor.action.TGActionProcessor(
+				this.context, "action.composition.change-tempo-range");
+		tempo.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_SONG, song);
+		tempo.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_HEADER, header);
+		tempo.setAttribute("applyTo", Integer.valueOf(fromMeasure <= 0 ? 1 : 2));
+		tempo.setAttribute("tempoValue", Integer.valueOf(bpm));
+		tempo.setAttribute("tempoBase", Integer.valueOf(4));
+		tempo.setAttribute("tempoBaseDotted", Boolean.FALSE);
+		tempo.processOnCurrentThread();
+
+		JsonObject result = new JsonObject();
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
+		return result;
+	}
+
+	public JsonObject exportSong(JsonObject params) throws RpcException {
+		String requested = (params.has("format") && !params.get("format").isJsonNull())
+			? params.get("format").getAsString().toLowerCase() : "mid";
+		TGSong song = TGDocumentManager.getInstance(this.context).getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+
+		app.tuxguitar.io.base.TGFileFormatManager formatManager =
+			app.tuxguitar.io.base.TGFileFormatManager.getInstance(this.context);
+		app.tuxguitar.io.base.TGFileFormat found = null;
+		StringBuilder available = new StringBuilder();
+		for (app.tuxguitar.io.base.TGSongWriter writer : formatManager.findSongWriters(false)) {
+			app.tuxguitar.io.base.TGFileFormat format = writer.getFileFormat();
+			if (available.length() > 0) {
+				available.append(", ");
+			}
+			available.append(format.getName());
+			if (format.getName().equalsIgnoreCase(requested)) {
+				found = format;
+			}
+			for (String extension : format.getSupportedFormats()) {
+				if (extension.equalsIgnoreCase(requested)) {
+					found = format;
+				}
+			}
+		}
+		if (found == null) {
+			throw new RpcException(RpcException.UNSUPPORTED,
+				"unknown export format '" + requested + "'; available: " + available);
+		}
+
+		// Same dispatch as File > Export > <format>: Save-As pre-set to the
+		// format — the user picks the file name and location in the dialog.
+		app.tuxguitar.editor.action.TGActionProcessor export =
+			new app.tuxguitar.editor.action.TGActionProcessor(this.context, "action.file.save-as");
+		export.setAttribute(app.tuxguitar.io.base.TGFileFormat.class.getName(), found);
+		export.processOnCurrentThread();
+
+		JsonObject result = new JsonObject();
+		result.addProperty("dialogOpened", true);
+		result.addProperty("format", found.getName());
+		return result;
+	}
+
 	public JsonObject setRepeat(JsonObject params) throws RpcException {
 		int from = params.has("fromMeasure") ? params.get("fromMeasure").getAsInt() : 1;
 		int to = params.has("toMeasure") ? params.get("toMeasure").getAsInt() : from;

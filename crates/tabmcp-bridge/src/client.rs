@@ -196,6 +196,25 @@ impl BridgeClient {
         )
     }
 
+    /// Change the tempo: whole song when `from_measure` is None, otherwise
+    /// from that measure to the end.
+    pub fn set_tempo(
+        &mut self,
+        bpm: u32,
+        from_measure: Option<u32>,
+    ) -> Result<serde_json::Value, BridgeError> {
+        let mut params = json!({ "bpm": bpm });
+        if let Some(measure) = from_measure {
+            params["fromMeasure"] = json!(measure);
+        }
+        self.call("set_tempo", &params)
+    }
+
+    /// Open TuxGuitar's export dialog pre-set to a format ("mid", "MIDI", ...).
+    pub fn export_song(&mut self, format: &str) -> Result<serde_json::Value, BridgeError> {
+        self.call("export_song", &json!({ "format": format }))
+    }
+
     pub fn play(&mut self) -> Result<serde_json::Value, BridgeError> {
         self.call("play", &json!({}))
     }

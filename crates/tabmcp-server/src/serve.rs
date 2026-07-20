@@ -260,6 +260,24 @@ struct GenerateParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct SetTempoParams {
+    /// New tempo in beats per minute (1..320).
+    bpm: u32,
+    /// Apply from this measure to the end. Omit to change the whole song.
+    #[serde(default)]
+    from_measure: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ExportParams {
+    /// Export format by name or extension: "mid"/"MIDI" for multitrack MIDI
+    /// (default). Other formats depend on installed TuxGuitar exporters
+    /// (e.g. Guitar Pro); unknown formats return the available list.
+    #[serde(default)]
+    format: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct SetRepeatParams {
     /// Measure where the repeat opens (1-based).
     from_measure: u32,
@@ -1204,6 +1222,50 @@ impl TabMcp {
             notes_before: None,
             notes_after: None,
         }))
+    }
+
+    #[tool(
+        description = "Change the tempo (BPM): the whole song by default, or from a given measure to the end (for tempo ramps, call once per section). NOTE: tempo changes are not in TuxGuitar's undo stack (the app's own tempo dialog isn't undoable either) — call again with the old BPM to revert.",
+        annotations(title = "Set tempo", read_only_hint = false, destructive_hint = false)
+    )]
+    async fn tuxguitar_set_tempo(
+        &self,
+        params: Parameters<SetTempoParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        if p.bpm < 1 || p.bpm > 320 {
+            return Err(ErrorData::invalid_params("bpm must be 1..320", None));
+        }
+        self.call_bridge(move |client| client.set_tempo(p.bpm, p.from_measure))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(match p.from_measure {
+            Some(measure) => format!("Tempo set to {} BPM from measure {measure} onward.", p.bpm),
+            None => format!("Tempo set to {} BPM for the whole song.", p.bpm),
+        })
+    }
+
+    #[tool(
+        description = "Export the score via TuxGuitar's own writers — opens the export dialog pre-set to the format (default 'mid' = one multitrack MIDI file with all tracks, drums on channel 10, repeats expanded); the user picks the file name and location. Great for handing the arrangement to a DAW.",
+        annotations(title = "Export", read_only_hint = true)
+    )]
+    async fn tuxguitar_export(
+        &self,
+        params: Parameters<ExportParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let format = p.format.unwrap_or_else(|| "mid".into());
+        let result = self
+            .call_bridge(move |client| client.export_song(&format))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(format!(
+            "Export dialog opened in TuxGuitar ({} format) — the user picks the destination.",
+            result
+                .get("format")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("requested")
+        ))
     }
 
     #[tool(
