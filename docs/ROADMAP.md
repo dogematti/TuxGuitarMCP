@@ -55,6 +55,15 @@
   Expectation: usable drafts from DI/isolated stems; rough sketches from
   dense metal mixes.
 
+### Field findings, session 3 (20-bar structured song — open items)
+- Bassline should be accent-aware: follow the guitar's accent NOTES (b2
+  stabs etc.), not just roots — the evaluator caught 19 clashes the
+  generator created; prevent them at the source.
+- evaluate: per-section scorecard (split at markers/meter changes) so the
+  whole-song 'erratic rhythm' flag stops firing on intentional contrast.
+- Revision counter: coalesce multi-bump operations (one apply -> one bump)
+  to quiet optimistic-locking bookkeeping.
+
 ### P3 — Expressiveness (partial: blast/d-beat styles + metal cost preset shipped; full effect params + technique costs open)
 - **Full effect parameters on write**: grace (fret/duration), trill,
   tremolo picking speed, tremolo-bar curves (read as flags today).

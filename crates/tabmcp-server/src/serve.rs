@@ -1802,7 +1802,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "Change the time signature from a measure onward (or just that measure with to_end=false) — e.g. 7/8 for a djent section. Undoable. Note: generators derive their grids from real measure lengths, so odd meters work downstream.",
+        description = "Change the time signature from a measure onward (or just that measure with to_end=false) — e.g. 7/8 for a djent section. NOTE: TuxGuitar re-bars trailing content by TOTAL TICKS, so shrinking meters can leave extra measures at the end (delete_measures cleans up). Undoable. Note: generators derive their grids from real measure lengths, so odd meters work downstream.",
         annotations(
             title = "Set time signature",
             read_only_hint = false,
@@ -2142,8 +2142,13 @@ impl TabMcp {
             .map_err(|e| ErrorData::internal_error(format!("stem task failed: {e}"), None))?
             .map_err(|e| ErrorData::internal_error(e, None))?;
 
+        let healthy = if report.contains("PRESCRIPTION") {
+            ""
+        } else {
+            "No prescriptions — all stems healthy (audible, unclipped).\n"
+        };
         Ok(format!(
-            "Per-track stems:\n{report}Stems kept in ~/.tuxguitar-mcp/stems/ (mid + wav per track).",
+            "Per-track stems:\n{report}{healthy}Stems kept in ~/.tuxguitar-mcp/stems/ (mid + wav per track).",
         ))
     }
 
@@ -2656,11 +2661,15 @@ impl TabMcp {
         let note_count = count_notes(&generated);
 
         if !p.confirm {
+            let destination = match p.target_track {
+                Some(existing) => format!("EXISTING track {existing}"),
+                None => format!("a new track \"{new_track_name}\""),
+            };
             return Ok(Json(EditOutcome {
                 applied: false,
                 summary: format!(
-                    "PREVIEW ONLY — nothing changed. Would create a new track \"{new_track_name}\" \
-                     and write {note_count} notes into measures {from}-{to}: {description}. \
+                    "PREVIEW ONLY — nothing changed. Would write into {destination} \
+                     {note_count} notes across measures {from}-{to}: {description}. \
                      Source: track {source_track} (\"{}\"). To apply, call again with \
                      confirm=true and expected_revision={}. (Undoing afterwards takes two \
                      Cmd+Z steps: one for the notes, one for the track.)",
@@ -2732,9 +2741,17 @@ impl TabMcp {
         Ok(Json(EditOutcome {
             applied: true,
             summary: format!(
-                "Applied: created track {new_track} \"{new_track_name}\" and wrote {} notes \
-                 into measures {from}-{to} — {description}. Undo takes two Cmd+Z steps.",
+                "Applied: wrote {} notes into {} (measures {from}-{to}) — {description}.{}",
                 result.notes_after,
+                match p.target_track {
+                    Some(existing) => format!("existing track {existing}"),
+                    None => format!("new track {new_track} \"{new_track_name}\""),
+                },
+                if p.target_track.is_some() {
+                    " Undoable with Cmd+Z."
+                } else {
+                    " Undo takes two Cmd+Z steps."
+                },
             ),
             revision: result.new_revision,
             measures_added: Some(0),

@@ -15,8 +15,7 @@ fn wire_format_matches_golden_fixture() {
         "measures": sim::demo_measures(1, 4),
     });
     let current = serde_json::to_string_pretty(&payload).expect("serializes");
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden/demo_wire.json");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/demo_wire.json");
     if std::env::var("UPDATE_GOLDEN").is_ok() {
         std::fs::write(&path, &current).expect("write golden");
         return;
