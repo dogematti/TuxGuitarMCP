@@ -9,8 +9,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tabmcp_model::{
-    ClientInfo, DiscoveryInfo, HelloParams, HelloResult, PingResult, Song, SpikeEditResult,
-    UndoResult, PROTOCOL_VERSION,
+    ClientInfo, DiscoveryInfo, HelloParams, HelloResult, MeasureRange, PingResult, Selection, Song,
+    SpikeEditResult, UndoResult, PROTOCOL_VERSION,
 };
 
 use crate::discovery::read_discovery;
@@ -91,6 +91,26 @@ impl BridgeClient {
 
     pub fn read_song(&mut self) -> Result<Song, BridgeError> {
         self.call("read_song", &json!({}))
+    }
+
+    pub fn read_measures(
+        &mut self,
+        track_number: u32,
+        from_measure: u32,
+        to_measure: u32,
+    ) -> Result<MeasureRange, BridgeError> {
+        self.call(
+            "read_measures",
+            &json!({
+                "trackNumber": track_number,
+                "fromMeasure": from_measure,
+                "toMeasure": to_measure,
+            }),
+        )
+    }
+
+    pub fn read_selection(&mut self) -> Result<Selection, BridgeError> {
+        self.call("read_selection", &json!({}))
     }
 
     pub fn spike_edit(&mut self) -> Result<SpikeEditResult, BridgeError> {

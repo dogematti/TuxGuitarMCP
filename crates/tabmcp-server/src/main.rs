@@ -11,6 +11,8 @@ use std::process::ExitCode;
 use tabmcp_bridge::{default_discovery_path, sim, BridgeClient};
 use tabmcp_theory::note_name;
 
+mod serve;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut discovery_path = default_discovery_path();
@@ -32,12 +34,13 @@ fn main() -> ExitCode {
         Some("doctor") => doctor(&discovery_path),
         Some("spike-test") => spike_test(&discovery_path),
         Some("bridge-sim") => bridge_sim(&discovery_path),
-        Some("serve") => {
-            eprintln!(
-                "tabmcp serve: the MCP server lands in Phase 3; use `doctor` to test the bridge."
-            );
-            ExitCode::from(2)
-        }
+        Some("serve") => match serve::run(&discovery_path) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("tabmcp serve: {message}");
+                ExitCode::FAILURE
+            }
+        },
         Some(other) => usage(&format!("unknown subcommand: {other}")),
         None => usage(""),
     }

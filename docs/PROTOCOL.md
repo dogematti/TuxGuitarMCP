@@ -97,6 +97,45 @@ Result:
 ```
 Errors: `E_NO_DOCUMENT`.
 
+### read_measures
+Params: `{ trackNumber, fromMeasure, toMeasure }` (1-based, inclusive)
+Result:
+```json
+{
+  "trackNumber": 1, "fromMeasure": 1, "toMeasure": 2,
+  "measures": [{
+    "number": 1, "keySignature": 0,
+    "beats": [{
+      "startTick": 960,
+      "voices": [{
+        "index": 0,
+        "duration": { "value": 8, "tuplet": { "enters": 1, "times": 1 } },
+        "notes": [{ "string": 6, "fret": 5, "velocity": 95,
+                    "effects": { "palmMute": true } }]
+      }]
+    }]
+  }],
+  "revision": 1, "documentId": "uuid"
+}
+```
+Durations: `value` 1=whole ... 64=sixty-fourth, optional `dotted`/`doubleDotted`
+(present only when true), `tuplet` 1:1 when normal. Voices that TuxGuitar marks
+empty are omitted; a voice with no notes carries `"isRest": true`. Effect flags
+appear only when set; complex effects (bend, harmonic, grace, trill, tremolo)
+are presence flags in v1. Ties: `"tied": true` marks a continuation note.
+Errors: `E_NO_DOCUMENT`, `E_INVALID_RANGE`.
+
+### read_selection
+Result:
+```json
+{
+  "active": true, "trackNumber": 1, "fromMeasure": 1, "toMeasure": 2,
+  "caret": { "trackNumber": 1, "measureNumber": 1, "tick": 960, "stringNumber": 6 },
+  "revision": 1
+}
+```
+`active: false` omits the range fields; the caret is reported whenever available.
+
 ### spike_edit  *(Milestone 1 only — removed when `apply_changeset` lands)*
 Hard-coded undoable edit at track 1 / measure 1 / beat 1: toggles string-6
 fret 5↔7, or adds a fret-5 quarter note if none exists.
@@ -106,7 +145,7 @@ Errors: `E_NO_DOCUMENT`, `E_EDIT_FAILED`, `E_LOCKED`.
 ### undo / redo
 Result: `{ performed, newRevision }` — `performed: false` when the stack is empty.
 
-## Planned for Phase 3/4 (not yet implemented)
+## Planned for Phase 4 (not yet implemented)
 
-`read_measures`, `read_selection`, `apply_changeset` (with
-`expectedRevision`), `save_copy`, `play`/`play_selection`/`stop`.
+`apply_changeset` (with `expectedRevision`), `save_copy`,
+`play`/`play_selection`/`stop`.

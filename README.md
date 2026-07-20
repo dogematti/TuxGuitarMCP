@@ -14,17 +14,33 @@ See [PLAN.md](PLAN.md) for the full architecture and
 
 ## Status
 
-Milestone 1 complete — the spine works end-to-end against TuxGuitar 2.0.1:
+Phase 3 complete — a working MCP server against TuxGuitar 2.0.1:
 
-- Plugin loads, listens on loopback, publishes a token-protected discovery file
-- `tabmcp doctor` connects, authenticates, and reads the open score
-  (metadata, tracks, tunings, tempo/time-signature map)
-- `tabmcp spike-test` applies a hard-coded edit **through TuxGuitar's undo
-  stack** — Cmd+Z in the GUI reverts it; `undo`/`redo` over the wire work
-- Bridge simulator (`tabmcp bridge-sim`) + integration tests run without TuxGuitar
+- **`tabmcp serve`** exposes 8 MCP tools over stdio:
+  `tuxguitar_get_bridge_status`, `tuxguitar_get_score_summary`,
+  `tuxguitar_get_measures`, `tuxguitar_get_selection`,
+  `tuxguitar_detect_key_and_scale`, `tuxguitar_explain_selection`,
+  `tuxguitar_undo`, `tuxguitar_redo`
+- The bridge plugin (0.2.0) serves song, measure content (beats, voices,
+  durations, string/fret, effect flags), and the live selection/caret
+- The theory engine detects scales/tonal centers (correctly separates
+  A minor pentatonic from C major) and produces plain-language explanations
+- Edits land in TuxGuitar's undo stack (proven by the Milestone-1 spike);
+  the change-set edit model is Phase 4
 
-Next: MCP `serve` (read tools), then the change-set edit model (see PLAN.md
-phases).
+## Using with an MCP client
+
+Install the binary and register it:
+
+```sh
+cargo install --path crates/tabmcp-server   # installs ~/.cargo/bin/tabmcp
+
+# Claude Code:
+claude mcp add tuxguitar -- ~/.cargo/bin/tabmcp serve
+```
+
+Then, with TuxGuitar running, ask the AI things like "what's open in
+TuxGuitar?", "explain the riff I selected", or "what scale is this?".
 
 ## Building
 

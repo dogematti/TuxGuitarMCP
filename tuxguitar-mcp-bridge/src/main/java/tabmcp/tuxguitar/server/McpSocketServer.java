@@ -142,7 +142,7 @@ public class McpSocketServer {
 					authenticated = true;
 					response = resultResponse(id, this.service.helloResult());
 				} else {
-					response = resultResponse(id, this.dispatch(method));
+					response = resultResponse(id, this.dispatch(method, params));
 				}
 			} catch (RpcException e) {
 				response = errorResponse(id, e.getCode(), e.getMessage());
@@ -156,12 +156,16 @@ public class McpSocketServer {
 		}
 	}
 
-	private JsonObject dispatch(String method) throws RpcException {
+	private JsonObject dispatch(String method, JsonObject params) throws RpcException {
 		switch (method) {
 			case "ping":
 				return this.service.ping();
 			case "read_song":
 				return this.service.readSong();
+			case "read_measures":
+				return this.service.readMeasures(params);
+			case "read_selection":
+				return this.service.readSelection();
 			case "spike_edit":
 				return this.service.spikeEdit();
 			case "undo":

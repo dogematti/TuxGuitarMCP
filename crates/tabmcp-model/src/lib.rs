@@ -7,6 +7,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod measures;
+pub use measures::*;
+
 /// Bridge protocol version implemented by this crate.
 pub const PROTOCOL_VERSION: u32 = 1;
 

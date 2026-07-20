@@ -11,13 +11,18 @@ import app.tuxguitar.app.TuxGuitar;
 import app.tuxguitar.document.TGDocumentManager;
 import app.tuxguitar.editor.TGEditorManager;
 import app.tuxguitar.editor.undo.TGUndoableManager;
+import app.tuxguitar.app.view.component.tab.Caret;
+import app.tuxguitar.app.view.component.tab.Selector;
+import app.tuxguitar.app.view.component.tab.Tablature;
 import app.tuxguitar.song.models.TGSong;
+import app.tuxguitar.song.models.TGTrack;
 import app.tuxguitar.util.TGContext;
 import app.tuxguitar.util.TGSynchronizer;
 import app.tuxguitar.util.TGVersion;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import tabmcp.tuxguitar.edit.SpikeEdit;
+import tabmcp.tuxguitar.read.MeasureReader;
 import tabmcp.tuxguitar.read.RevisionTracker;
 import tabmcp.tuxguitar.read.SongReader;
 
@@ -29,18 +34,20 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.1.0";
+	public static final String PLUGIN_VERSION = "0.2.0";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 
 	private final TGContext context;
 	private final RevisionTracker revisionTracker;
 	private final SongReader songReader;
+	private final MeasureReader measureReader;
 
 	public BridgeService(TGContext context, RevisionTracker revisionTracker) {
 		this.context = context;
 		this.revisionTracker = revisionTracker;
 		this.songReader = new SongReader();
+		this.measureReader = new MeasureReader();
 	}
 
 	public RevisionTracker getRevisionTracker() {
@@ -54,6 +61,7 @@ public class BridgeService {
 
 		JsonArray capabilities = new JsonArray();
 		capabilities.add("read");
+		capabilities.add("selection");
 		capabilities.add("edit");
 		capabilities.add("undo");
 
@@ -89,6 +97,84 @@ public class BridgeService {
 		}
 		result.addProperty("revision", this.revisionTracker.getRevision());
 		result.addProperty("documentId", this.revisionTracker.getDocumentId());
+		return result;
+	}
+
+	public JsonObject readMeasures(JsonObject params) throws RpcException {
+		final int trackNumber = params.has("trackNumber") ? params.get("trackNumber").getAsInt() : 1;
+		final int from = params.has("fromMeasure") ? params.get("fromMeasure").getAsInt() : 1;
+		final int to = params.has("toMeasure") ? params.get("toMeasure").getAsInt() : from;
+
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		final AtomicReference<JsonObject> resultRef = new AtomicReference<>();
+		final AtomicReference<String> errorRef = new AtomicReference<>();
+		TGEditorManager.getInstance(this.context).runLocked(new Runnable() {
+			public void run() {
+				TGSong song = documentManager.getSong();
+				if (song == null) {
+					errorRef.set(RpcException.NO_DOCUMENT);
+					return;
+				}
+				TGTrack track = BridgeService.this.measureReader.findTrack(song, trackNumber);
+				if (track == null || from < 1 || to < from || to > track.countMeasures()) {
+					errorRef.set(RpcException.INVALID_RANGE);
+					return;
+				}
+				JsonObject result = new JsonObject();
+				result.addProperty("trackNumber", trackNumber);
+				result.addProperty("fromMeasure", from);
+				result.addProperty("toMeasure", to);
+				result.add("measures", BridgeService.this.measureReader.readMeasures(track, from, to));
+				resultRef.set(result);
+			}
+		});
+		if (errorRef.get() != null) {
+			if (RpcException.NO_DOCUMENT.equals(errorRef.get())) {
+				throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+			}
+			throw new RpcException(RpcException.INVALID_RANGE,
+				"invalid track " + trackNumber + " or measure range " + from + "-" + to);
+		}
+		JsonObject result = resultRef.get();
+		result.addProperty("revision", this.revisionTracker.getRevision());
+		result.addProperty("documentId", this.revisionTracker.getDocumentId());
+		return result;
+	}
+
+	public JsonObject readSelection() throws RpcException {
+		final AtomicReference<JsonObject> resultRef = new AtomicReference<>();
+		this.runOnUiThread(new Runnable() {
+			public void run() {
+				JsonObject result = new JsonObject();
+				Tablature tablature = TuxGuitar.getInstance().getTablatureEditor().getTablature();
+				Selector selector = tablature.getSelector();
+				Caret caret = tablature.getCaret();
+
+				boolean active = selector != null && selector.isActive()
+					&& selector.getStartBeat() != null && selector.getEndBeat() != null;
+				result.addProperty("active", active);
+				if (active) {
+					result.addProperty("trackNumber",
+						caret.getTrack() != null ? caret.getTrack().getNumber() : 1);
+					result.addProperty("fromMeasure", selector.getStartBeat().getMeasure().getNumber());
+					result.addProperty("toMeasure", selector.getEndBeat().getMeasure().getNumber());
+				}
+				if (caret != null && caret.getTrack() != null && caret.getMeasure() != null) {
+					JsonObject caretDto = new JsonObject();
+					caretDto.addProperty("trackNumber", caret.getTrack().getNumber());
+					caretDto.addProperty("measureNumber", caret.getMeasure().getNumber());
+					caretDto.addProperty("tick", caret.getPosition());
+					caretDto.addProperty("stringNumber", caret.getStringNumber());
+					result.add("caret", caretDto);
+				}
+				resultRef.set(result);
+			}
+		});
+		JsonObject result = resultRef.get();
+		if (result == null) {
+			throw new RpcException(RpcException.INTERNAL, "selection state unavailable");
+		}
+		result.addProperty("revision", this.revisionTracker.getRevision());
 		return result;
 	}
 

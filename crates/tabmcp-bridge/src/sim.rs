@@ -12,8 +12,9 @@ use std::thread::JoinHandle;
 
 use serde_json::{json, Value};
 use tabmcp_model::{
-    error_codes, DiscoveryInfo, Header, Song, SongMetadata, StringTuning, TimeSignature, Track,
-    PROTOCOL_VERSION, TICKS_PER_QUARTER,
+    error_codes, Beat, DiscoveryInfo, Duration, Header, Measure, Note, NoteEffects, Song,
+    SongMetadata, StringTuning, TimeSignature, Track, Tuplet, Voice, PROTOCOL_VERSION,
+    TICKS_PER_QUARTER,
 };
 
 pub struct SimHandle {
@@ -111,6 +112,91 @@ pub fn demo_song() -> Song {
         revision: 0,
         document_id: "sim-doc".into(),
     }
+}
+
+/// Measures for the demo song's guitar track: measures 1-2 carry an
+/// A minor pentatonic riff in eighth notes, measures 3-4 are rests.
+/// (string, fret) over standard tuning: A2 C3 D3 E3 G3 A3 G3 E3 | D3 C3 A2 ...
+pub fn demo_measures(from: u32, to: u32) -> Vec<Measure> {
+    const RIFF: [&[(u32, u32)]; 2] = [
+        &[
+            (6, 5),
+            (6, 8),
+            (5, 5),
+            (5, 7),
+            (4, 5),
+            (4, 7),
+            (4, 5),
+            (5, 7),
+        ],
+        &[
+            (5, 5),
+            (6, 8),
+            (6, 5),
+            (6, 8),
+            (5, 5),
+            (5, 7),
+            (5, 5),
+            (6, 5),
+        ],
+    ];
+    let eighth = Duration {
+        value: 8,
+        dotted: false,
+        double_dotted: false,
+        tuplet: Tuplet {
+            enters: 1,
+            times: 1,
+        },
+    };
+    (from..=to)
+        .map(|number| {
+            let measure_start = TICKS_PER_QUARTER * (1 + 4 * (number as u64 - 1));
+            let beats = match RIFF.get(number as usize - 1) {
+                Some(steps) => steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(string, fret))| Beat {
+                        start_tick: measure_start + i as u64 * (TICKS_PER_QUARTER / 2),
+                        voices: vec![Voice {
+                            index: 0,
+                            duration: eighth.clone(),
+                            is_rest: false,
+                            notes: vec![Note {
+                                string,
+                                fret,
+                                velocity: 95,
+                                tied: false,
+                                effects: NoteEffects::default(),
+                            }],
+                        }],
+                    })
+                    .collect(),
+                None => vec![Beat {
+                    start_tick: measure_start,
+                    voices: vec![Voice {
+                        index: 0,
+                        duration: Duration {
+                            value: 1,
+                            dotted: false,
+                            double_dotted: false,
+                            tuplet: Tuplet {
+                                enters: 1,
+                                times: 1,
+                            },
+                        },
+                        is_rest: true,
+                        notes: Vec::new(),
+                    }],
+                }],
+            };
+            Measure {
+                number,
+                key_signature: 0,
+                beats,
+            }
+        })
+        .collect()
 }
 
 fn random_token() -> String {
@@ -273,6 +359,56 @@ fn handle_request(request: &Value, token: &str, state: &mut SimState) -> Value {
                 serde_json::to_value(song).expect("demo song serializes"),
             )
         }
+        "read_measures" => {
+            let track = params
+                .get("trackNumber")
+                .and_then(Value::as_u64)
+                .unwrap_or(1) as u32;
+            let from = params
+                .get("fromMeasure")
+                .and_then(Value::as_u64)
+                .unwrap_or(1) as u32;
+            let to = params
+                .get("toMeasure")
+                .and_then(Value::as_u64)
+                .unwrap_or(4)
+                .min(4) as u32;
+            if track > 2 || from == 0 || from > to {
+                return error_response(id, error_codes::INVALID_RANGE, "bad track/measure range");
+            }
+            let measures = if track == 1 {
+                demo_measures(from, to)
+            } else {
+                demo_measures(3, 3) // bass track: rests only in the sim
+            };
+            result_response(
+                id,
+                json!({
+                    "trackNumber": track,
+                    "fromMeasure": from,
+                    "toMeasure": to,
+                    "measures": measures,
+                    "revision": state.revision.load(Ordering::SeqCst),
+                    "documentId": "sim-doc",
+                }),
+            )
+        }
+        "read_selection" => result_response(
+            id,
+            json!({
+                "active": true,
+                "trackNumber": 1,
+                "fromMeasure": 1,
+                "toMeasure": 2,
+                "caret": {
+                    "trackNumber": 1,
+                    "measureNumber": 1,
+                    "tick": TICKS_PER_QUARTER,
+                    "stringNumber": 6,
+                },
+                "revision": state.revision.load(Ordering::SeqCst),
+            }),
+        ),
         "spike_edit" => {
             state.spike_applied = true;
             let new_revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
