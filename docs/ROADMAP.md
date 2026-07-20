@@ -24,6 +24,25 @@
 - **Golden .tg suite**: real files with odd meters, tuplets, ties, repeats,
   both voices — checked-in expected JSON on both sides.
 
+### P1.5 — Field findings from the Phrygian-dominant/Hirajoshi test (2026-07-20)
+- **Bass root detection**: measure_roots misread 6/16 bars on modal material
+  (heard b2/5th emphasis as roots). Fix: weight the measure's lowest/first
+  pitch as a strong root prior — bass players follow the riff's low anchor,
+  not the histogram. Also: when roots vary per bar the fifth-walk never
+  fires, leaving one note per bar — contour-following should be the default,
+  root-drone the fallback.
+- **Section-aware generation**: the drum generator applies one style across
+  the whole range (gallop blasted through the halftime breakdown). Use
+  markers/section boundaries to switch templates, or accept a per-range
+  style list.
+- **Groove metric is gallop-blind**: the IOI top-share metric scored a
+  legitimate gallop 40% ('erratic') because gallops are bimodal by design.
+  Upgrade to periodicity detection (repeating IOI *patterns*, not a single
+  dominant interval). The test session correctly cross-validated the flag
+  before acting — but the metric should not need defending.
+- Confirmed fixed in the field: bass soundfont-floor bug (stems audible,
+  mid-forward); 44-scale catalog (A phrygian dominant detected as top pick).
+
 ### P2.5 — Import pipeline (queued after the current field test)
 - **Stage 1: import_midi** — parse a .mid from the fixed scratch path
   (midly is already a dependency), beat-quantize onto the tick grid,
