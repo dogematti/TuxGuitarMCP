@@ -267,10 +267,11 @@ struct SimState {
     revision: AtomicU64,
     /// Simulated fret of the spike note: None until spike_edit runs.
     spike_applied: bool,
-    /// Track-1 measures overridden by apply_changeset (number -> content).
-    overrides: std::collections::HashMap<u32, Measure>,
+    /// Measures overridden by apply_changeset ((track, measure_number) -> content).
+    overrides: std::collections::HashMap<(u32, u32), Measure>,
     /// Simulated song length in measures (apply_changeset can extend it).
     measure_count: u32,
+    tracks: Vec<Track>,
 }
 
 fn serve_client(stream: TcpStream, token: &str, shutdown: &AtomicBool) -> std::io::Result<()> {
@@ -285,6 +286,7 @@ fn serve_client(stream: TcpStream, token: &str, shutdown: &AtomicBool) -> std::i
         spike_applied: false,
         overrides: std::collections::HashMap::new(),
         measure_count: 4,
+        tracks: demo_song().tracks,
     };
 
     let mut line = String::new();
@@ -360,7 +362,28 @@ fn handle_request(request: &Value, token: &str, state: &mut SimState) -> Value {
         ),
         "read_song" => {
             let mut song = demo_song();
+            if !state.tracks.is_empty() {
+                song.tracks = state.tracks.clone();
+            }
             song.revision = state.revision.load(Ordering::SeqCst);
+            song.headers = (0..state.measure_count)
+                .map(|i| Header {
+                    number: i + 1,
+                    start_tick: TICKS_PER_QUARTER * (1 + 4 * i as u64),
+                    time_signature: TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    },
+                    tempo_bpm: 140,
+                    repeat_open: false,
+                    repeat_close: 0,
+                    repeat_alternative: 0,
+                    marker: None,
+                })
+                .collect();
+            for t in &mut song.tracks {
+                t.measure_count = state.measure_count;
+            }
             result_response(
                 id,
                 serde_json::to_value(song).expect("demo song serializes"),
@@ -378,19 +401,43 @@ fn handle_request(request: &Value, token: &str, state: &mut SimState) -> Value {
             let to = params
                 .get("toMeasure")
                 .and_then(Value::as_u64)
-                .unwrap_or(4)
-                .min(4) as u32;
-            if track > 2 || from == 0 || from > to || to > state.measure_count {
+                .unwrap_or(state.measure_count as u64) as u32;
+            if track == 0 || from == 0 || from > to {
                 return error_response(id, error_codes::INVALID_RANGE, "bad track/measure range");
             }
-            let measures: Vec<Measure> = if track == 1 {
-                demo_measures(from, to)
-                    .into_iter()
-                    .map(|m| state.overrides.get(&m.number).cloned().unwrap_or(m))
-                    .collect()
-            } else {
-                demo_measures(3, 3) // bass track: rests only in the sim
-            };
+            let measures: Vec<Measure> = (from..=to)
+                .map(|n| {
+                    if let Some(m) = state.overrides.get(&(track, n)) {
+                        m.clone()
+                    } else if track == 1 && n <= 2 {
+                        demo_measures(n, n).pop().unwrap()
+                    } else {
+                        let measure_start = TICKS_PER_QUARTER * (1 + 4 * (n as u64 - 1));
+                        Measure {
+                            number: n,
+                            start_tick: measure_start,
+                            key_signature: 0,
+                            beats: vec![Beat {
+                                start_tick: measure_start,
+                                voices: vec![Voice {
+                                    index: 0,
+                                    duration: Duration {
+                                        value: 1,
+                                        dotted: false,
+                                        double_dotted: false,
+                                        tuplet: Tuplet {
+                                            enters: 1,
+                                            times: 1,
+                                        },
+                                    },
+                                    is_rest: true,
+                                    notes: Vec::new(),
+                                }],
+                            }],
+                        }
+                    }
+                })
+                .collect();
             result_response(
                 id,
                 json!({
@@ -435,6 +482,10 @@ fn handle_request(request: &Value, token: &str, state: &mut SimState) -> Value {
                 .and_then(|c| c.first())
                 .cloned()
                 .unwrap_or(Value::Null);
+            let track = change
+                .get("trackNumber")
+                .and_then(Value::as_u64)
+                .unwrap_or(1) as u32;
             let measures: Vec<Measure> = match change
                 .get("measures")
                 .map(|m| serde_json::from_value(m.clone()))
@@ -460,7 +511,7 @@ fn handle_request(request: &Value, token: &str, state: &mut SimState) -> Value {
                     state.measure_count = measure.number;
                     added += 1;
                 }
-                state.overrides.insert(measure.number, measure);
+                state.overrides.insert((track, measure.number), measure);
             }
             let new_revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
             result_response(
@@ -476,14 +527,50 @@ fn handle_request(request: &Value, token: &str, state: &mut SimState) -> Value {
         }
         "save_copy" => result_response(id, json!({ "dialogOpened": true })),
         "create_track" => {
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("New Track")
+                .to_string();
+            let is_perc = params
+                .get("percussion")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let next_num = (state.tracks.len() + 1) as u32;
+            state.tracks.push(Track {
+                number: next_num,
+                name,
+                strings: Vec::new(),
+                program: if is_perc { 0 } else { 29 },
+                is_percussion: is_perc,
+                offset: 0,
+                max_fret: 24,
+                measure_count: state.measure_count,
+            });
             let new_revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
-            result_response(id, json!({ "trackNumber": 3, "newRevision": new_revision }))
+            result_response(id, json!({ "trackNumber": next_num, "newRevision": new_revision }))
         }
         "change_tuning" => {
             let expected = params.get("expectedRevision").and_then(Value::as_u64);
             let current = state.revision.load(Ordering::SeqCst);
             if expected.is_some() && expected != Some(current) {
                 return error_response(id, error_codes::STALE_REVISION, "score changed");
+            }
+            let track_idx = params
+                .get("trackNumber")
+                .and_then(Value::as_u64)
+                .unwrap_or(1) as usize
+                - 1;
+            let a_std_7 = [62u8, 57, 53, 48, 43, 38, 33];
+            if track_idx < state.tracks.len() {
+                state.tracks[track_idx].strings = a_std_7
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &p)| StringTuning {
+                        number: i as u32 + 1,
+                        open_pitch: p,
+                    })
+                    .collect();
             }
             let new_revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
             result_response(id, json!({ "newRevision": new_revision }))

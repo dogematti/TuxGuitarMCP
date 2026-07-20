@@ -2218,7 +2218,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "Composition recipes per style: a consistent rubric of scales, tuning presets, tempo, meters, rhythmic cells, techniques, drums, signature devices, song-section arc, mood, difficulty, an AVOID list, and numeric evaluation targets. Call without a style to list the catalog plus universal instrument roles. GENRE CROSSOVER: pass a blend like '60% death metal, 40% doom' (or 'djent + doom') to merge stylistic characteristics by weight - traits, never copied riffs. USE THIS before composing in a named genre.",
+        description = "Composition recipes per style: a consistent rubric of scales, tuning presets, tempo, meters, rhythmic cells, techniques, drums, signature devices, song-section arc, mood, difficulty, an AVOID list, and numeric evaluation targets - PLUS the user's own player notes (fretboard vocabulary, favorite positions, house rules) loaded from ~/.tuxguitar-mcp/styles/<style>.md when present. Call without a style to list the catalog plus universal instrument roles. GENRE CROSSOVER: pass a blend like '60% death metal, 40% doom' (or 'djent + doom') to merge stylistic characteristics by weight - traits, never copied riffs. USE THIS before composing in a named genre; the player notes override the generic rubric where they conflict.",
         annotations(title = "Style guide", read_only_hint = true)
     )]
     async fn tuxguitar_style_guide(
@@ -2226,10 +2226,34 @@ impl TabMcp {
         params: Parameters<StyleGuideParams>,
     ) -> Result<String, ErrorData> {
         let Parameters(p) = params;
+        fn player_notes(style_name: &str) -> Option<String> {
+            let slug = style_name.trim().to_ascii_lowercase().replace(' ', "-");
+            let path = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".tuxguitar-mcp")
+                .join("styles")
+                .join(format!("{slug}.md"));
+            std::fs::read_to_string(path).ok().and_then(|s| {
+                let trimmed = s.trim().to_string();
+                (!trimmed.is_empty()).then_some(trimmed)
+            })
+        }
+        fn with_notes(base: String, style_name: &str) -> String {
+            match player_notes(style_name) {
+                Some(notes) => format!(
+                    "{base}\nPLAYER NOTES (the user's own vocabulary - follow these over \
+                     the generic recipe when they conflict):\n{notes}\n"
+                ),
+                None => base,
+            }
+        }
         match p.style.as_deref() {
             Some(spec) if spec.contains('%') || spec.contains('+') || spec.contains(',') => {
                 tabmcp_theory::styles::parse_blend(spec)
-                    .map(|parts| tabmcp_theory::styles::describe_blend(&parts))
+                    .map(|parts| {
+                        // Blends carry the dominant style's player notes.
+                        let dominant = parts[0].1.name;
+                        with_notes(tabmcp_theory::styles::describe_blend(&parts), dominant)
+                    })
                     .ok_or_else(|| {
                         ErrorData::invalid_params(
                             format!(
@@ -2246,30 +2270,74 @@ impl TabMcp {
                     })
             }
             Some(name) => tabmcp_theory::styles::style_guide(name)
-                .map(tabmcp_theory::styles::describe)
+                .map(|g| with_notes(tabmcp_theory::styles::describe(g), g.name))
+                .or_else(|| {
+                    // A player-notes file alone defines a custom style.
+                    player_notes(name).map(|notes| {
+                        format!(
+                            "CUSTOM STYLE: {name} (user-defined - no built-in rubric)\n\
+                             PLAYER NOTES:\n{notes}\n"
+                        )
+                    })
+                })
                 .ok_or_else(|| {
                     ErrorData::invalid_params(
                         format!(
-                            "unknown style '{name}'; available: {}",
+                            "unknown style '{name}'; available: {}. Or define your own: \
+                             write ~/.tuxguitar-mcp/styles/{}.md",
                             tabmcp_theory::styles::STYLES
                                 .iter()
                                 .map(|s| s.name)
                                 .collect::<Vec<_>>()
-                                .join(", ")
+                                .join(", "),
+                            name.trim().to_ascii_lowercase().replace(' ', "-"),
                         ),
                         None,
                     )
                 }),
-            None => Ok(format!(
-                "Available styles (pass one for the full recipe, or a blend like \
-                 '60% death metal, 40% doom'):\n{}\n\n{}",
-                tabmcp_theory::styles::STYLES
-                    .iter()
-                    .map(|s| format!("  {} — {} BPM, {}", s.name, s.tempo, s.drums))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                tabmcp_theory::styles::ROLES,
-            )),
+            None => {
+                let notes_dir = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                    .join(".tuxguitar-mcp")
+                    .join("styles");
+                let mut noted: Vec<String> = std::fs::read_dir(&notes_dir)
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .filter_map(|e| {
+                                let name = e.file_name().to_string_lossy().to_string();
+                                name.strip_suffix(".md").map(|s| s.replace('-', " "))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                noted.sort();
+                let notes_line = if noted.is_empty() {
+                    format!(
+                        "\nPlayer notes: none yet - drop markdown files in {} \
+                         (e.g. metalcore.md with your fretboard vocabulary, favorite \
+                         positions, house rules); they are served with the matching \
+                         style automatically, and a file with a new name defines a \
+                         custom style.",
+                        notes_dir.display()
+                    )
+                } else {
+                    format!(
+                        "\nPlayer notes on file (served automatically with the style): {}",
+                        noted.join(", ")
+                    )
+                };
+                Ok(format!(
+                    "Available styles (pass one for the full recipe, or a blend like \
+                     '60% death metal, 40% doom'):\n{}\n{}\n\n{}",
+                    tabmcp_theory::styles::STYLES
+                        .iter()
+                        .map(|s| format!("  {} — {} BPM, {}", s.name, s.tempo, s.drums))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    notes_line,
+                    tabmcp_theory::styles::ROLES,
+                ))
+            }
         }
     }
 
