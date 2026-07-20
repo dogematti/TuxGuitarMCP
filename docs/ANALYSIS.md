@@ -167,7 +167,35 @@ with their own tools, vote, apply the winners).
 | Live audience simulation | SKIPPED by user |
 | Classic-riff gate | DONE - tuxguitar_hook_check |
 
-## 5. What remains, prioritized
+## 5. Roadmap v3: the arrangement layer (analysis of 2026-07-20 evening)
+
+Phase one taught the system to write a riff; phase two taught it to judge
+one. The remaining complexity lives BETWEEN riffs. Build order:
+
+1. Transition engine: drum fills, buildups, and band stops at section
+   boundaries (markers) - the cheapest big audible win.
+2. Ornament pass: style-idiomatic articulation over existing material
+   (vibrato, slides, pinch on peaks, tremolo conversion; realism-gated).
+   Generators currently use ZERO of the articulations the plugin can
+   write since 0.8.0.
+3. plan_harmony: progression planning + voice-leading check; battle
+   evidence shows every entry pedals one root for the whole song. Plus
+   development quotas in style targets (max literal-repeat share) so
+   evaluate { style } fails loudly on copy-paste.
+4. Lick-cell lead generator: pitch-shape cells + contour plan +
+   question/answer periods, fingering-optimized, difficulty-capped.
+5. Tension-coupled search: generate_riff fitness follows a per-bar
+   tension/emotion target; phrase-end cadence awareness.
+6. Plumbing: persist AI Ear pass history to disk keyed by documentId
+   (in-memory state dies every embedded-chat turn - confirmed);
+   diff_measures (musical git-diff); per-section evaluate for ALL
+   metrics; structured player-note hints parsed into generate_riff
+   constraints.
+
+Deliberately not next: more styles (depth over breadth), micro-timing
+(grid cannot hold it), audio-to-tab stage 2 (research-sized).
+
+## 6. What remains, prioritized (older list)
 
 Near (mechanical): revision-bump coalescing (Java events); tremolo-bar
 curves on write (grace/trill/tremolo-picking shipped in 0.8.0);
