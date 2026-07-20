@@ -127,9 +127,28 @@ public class MeasureReader {
 		addFlag(dto, "slapping", effect.isSlapping());
 		addFlag(dto, "popping", effect.isPopping());
 		addFlag(dto, "fadeIn", effect.isFadeIn());
-		addFlag(dto, "bend", effect.isBend());
+		if (effect.isBend() && effect.getBend() != null) {
+			JsonObject bend = new JsonObject();
+			JsonArray points = new JsonArray();
+			for (app.tuxguitar.song.models.effects.TGEffectBend.BendPoint point
+					: effect.getBend().getPoints()) {
+				JsonObject dtoPoint = new JsonObject();
+				dtoPoint.addProperty("position", point.getPosition());
+				dtoPoint.addProperty("value", point.getValue());
+				points.add(dtoPoint);
+			}
+			bend.add("points", points);
+			dto.add("bend", bend);
+		}
 		addFlag(dto, "tremoloBar", effect.isTremoloBar());
-		addFlag(dto, "harmonic", effect.isHarmonic());
+		if (effect.isHarmonic() && effect.getHarmonic() != null) {
+			JsonObject harmonic = new JsonObject();
+			harmonic.addProperty("type", harmonicName(effect.getHarmonic().getType()));
+			if (effect.getHarmonic().getData() != 0) {
+				harmonic.addProperty("data", effect.getHarmonic().getData());
+			}
+			dto.add("harmonic", harmonic);
+		}
 		addFlag(dto, "grace", effect.isGrace());
 		addFlag(dto, "trill", effect.isTrill());
 		addFlag(dto, "tremoloPicking", effect.isTremoloPicking());
@@ -140,5 +159,34 @@ public class MeasureReader {
 		if (value) {
 			dto.addProperty(name, true);
 		}
+	}
+
+	/** Maps TGEffectHarmonic.TYPE_* to the wire names. */
+	public static String harmonicName(int type) {
+		switch (type) {
+			case app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_NATURAL: return "natural";
+			case app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_ARTIFICIAL: return "artificial";
+			case app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_TAPPED: return "tapped";
+			case app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_PINCH: return "pinch";
+			case app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_SEMI: return "semi";
+			default: return "natural";
+		}
+	}
+
+	/** Maps wire names back to TGEffectHarmonic.TYPE_*. */
+	public static int harmonicType(String name) {
+		if ("artificial".equals(name)) {
+			return app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_ARTIFICIAL;
+		}
+		if ("tapped".equals(name)) {
+			return app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_TAPPED;
+		}
+		if ("pinch".equals(name)) {
+			return app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_PINCH;
+		}
+		if ("semi".equals(name)) {
+			return app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_SEMI;
+		}
+		return app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_NATURAL;
 	}
 }

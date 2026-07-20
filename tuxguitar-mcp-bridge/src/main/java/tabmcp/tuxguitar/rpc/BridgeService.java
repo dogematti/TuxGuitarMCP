@@ -35,7 +35,7 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.4.0";
+	public static final String PLUGIN_VERSION = "0.4.1";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 

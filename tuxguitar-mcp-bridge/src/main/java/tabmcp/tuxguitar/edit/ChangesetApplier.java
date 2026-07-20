@@ -200,8 +200,48 @@ public class ChangesetApplier {
 		effect.setSlapping(flag(wire, "slapping"));
 		effect.setPopping(flag(wire, "popping"));
 		effect.setFadeIn(flag(wire, "fadeIn"));
-		// Complex effects (bend, harmonic, grace, trill, tremolo) need their
-		// parameter objects and arrive in a later protocol version.
+
+		JsonElement harmonic = wire.get("harmonic");
+		if (harmonic != null && !(harmonic.isJsonPrimitive()
+				&& harmonic.getAsJsonPrimitive().isBoolean() && !harmonic.getAsBoolean())) {
+			app.tuxguitar.song.models.effects.TGEffectHarmonic tgHarmonic = factory.newEffectHarmonic();
+			if (harmonic.isJsonObject()) {
+				JsonObject h = harmonic.getAsJsonObject();
+				tgHarmonic.setType(tabmcp.tuxguitar.read.MeasureReader.harmonicType(
+					h.has("type") ? h.get("type").getAsString() : "natural"));
+				tgHarmonic.setData(h.has("data") ? h.get("data").getAsInt() : 0);
+			} else {
+				tgHarmonic.setType(
+					app.tuxguitar.song.models.effects.TGEffectHarmonic.TYPE_NATURAL);
+			}
+			effect.setHarmonic(tgHarmonic);
+		}
+
+		JsonElement bend = wire.get("bend");
+		if (bend != null && !(bend.isJsonPrimitive()
+				&& bend.getAsJsonPrimitive().isBoolean() && !bend.getAsBoolean())) {
+			app.tuxguitar.song.models.effects.TGEffectBend tgBend = factory.newEffectBend();
+			com.google.gson.JsonArray points = (bend.isJsonObject()
+				&& bend.getAsJsonObject().has("points"))
+					? bend.getAsJsonObject().getAsJsonArray("points") : null;
+			if (points != null && points.size() > 0) {
+				for (JsonElement pointElement : points) {
+					JsonObject point = pointElement.getAsJsonObject();
+					tgBend.addPoint(
+						point.has("position") ? point.get("position").getAsInt() : 0,
+						point.has("value") ? point.get("value").getAsInt() : 0);
+				}
+			} else {
+				// Standard full-tone bend: up over the first half, hold.
+				tgBend.addPoint(0, 0);
+				tgBend.addPoint(6, 2);
+				tgBend.addPoint(12, 2);
+			}
+			effect.setBend(tgBend);
+		}
+
+		// Remaining complex effects (grace, trill, tremolo picking/bar) still
+		// arrive as presence flags and are not applied yet.
 		return effect;
 	}
 

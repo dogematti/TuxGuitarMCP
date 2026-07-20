@@ -121,8 +121,19 @@ Result:
 Durations: `value` 1=whole ... 64=sixty-fourth, optional `dotted`/`doubleDotted`
 (present only when true), `tuplet` 1:1 when normal. Voices that TuxGuitar marks
 empty are omitted; a voice with no notes carries `"isRest": true`. Effect flags
-appear only when set; complex effects (bend, harmonic, grace, trill, tremolo)
-are presence flags in v1. Ties: `"tied": true` marks a continuation note.
+appear only when set. Ties: `"tied": true` marks a continuation note.
+
+Parameterized effects (since plugin 0.4.1):
+- `"harmonic": { "type": "natural"|"artificial"|"tapped"|"pinch"|"semi",
+  "data": <octave offset, artificial/tapped only> }`
+- `"bend": { "points": [{ "position": 0-12, "value": <semitones> }] }` —
+  position spans the note's duration; on write, an empty/missing points list
+  applies a standard full-tone bend (0,0)→(6,2)→(12,2).
+- Readers must also accept the legacy boolean form (`"harmonic": true` =
+  natural harmonic, `"bend": true` = standard bend).
+- Still presence flags (not yet applied on write): grace, trill,
+  tremoloPicking, tremoloBar.
+
 Errors: `E_NO_DOCUMENT`, `E_INVALID_RANGE`.
 
 ### read_selection

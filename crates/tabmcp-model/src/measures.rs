@@ -36,9 +36,89 @@ pub struct Duration {
     pub tuplet: Tuplet,
 }
 
+/// A harmonic effect. `kind` serializes as `type` on the wire:
+/// "natural" (N.H), "artificial" (A.H), "tapped" (T.H), "pinch" (P.H),
+/// or "semi" (S.H). `data` is the octave offset for artificial/tapped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HarmonicEffect {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<i32>,
+}
+
+impl HarmonicEffect {
+    pub fn pinch() -> Self {
+        HarmonicEffect {
+            kind: "pinch".into(),
+            data: None,
+        }
+    }
+    pub fn natural() -> Self {
+        HarmonicEffect {
+            kind: "natural".into(),
+            data: None,
+        }
+    }
+}
+
+/// One point of a bend curve: `position` 0..=12 spans the note's duration,
+/// `value` is the bend height in semitones (2 = full tone).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BendPoint {
+    pub position: u32,
+    pub value: u32,
+}
+
+/// A bend. An empty `points` list means "standard full-tone bend"
+/// (the bridge writes 0->2 semitones over the first half of the note).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BendEffect {
+    #[serde(default)]
+    pub points: Vec<BendPoint>,
+}
+
+/// Accept both the legacy boolean form (`"harmonic": true`) and the
+/// parameterized object form on the wire.
+mod effect_compat {
+    use super::{BendEffect, HarmonicEffect};
+    use serde::{Deserialize, Deserializer};
+
+    pub fn harmonic<'de, D: Deserializer<'de>>(d: D) -> Result<Option<HarmonicEffect>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Legacy(bool),
+            Full(HarmonicEffect),
+        }
+        Ok(Option::<Raw>::deserialize(d)?.and_then(|raw| match raw {
+            Raw::Legacy(true) => Some(HarmonicEffect::natural()),
+            Raw::Legacy(false) => None,
+            Raw::Full(h) => Some(h),
+        }))
+    }
+
+    pub fn bend<'de, D: Deserializer<'de>>(d: D) -> Result<Option<BendEffect>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Legacy(bool),
+            Full(BendEffect),
+        }
+        Ok(Option::<Raw>::deserialize(d)?.and_then(|raw| match raw {
+            Raw::Legacy(true) => Some(BendEffect::default()),
+            Raw::Legacy(false) => None,
+            Raw::Full(b) => Some(b),
+        }))
+    }
+}
+
 /// Per-note effect flags. Only flags that are set travel on the wire.
-/// Complex effects (bend, harmonic, grace, trill, tremolo picking/bar) are
-/// represented as presence flags in v1; their parameters come in a later
+/// Harmonics and bends carry parameters; the remaining complex effects
+/// (grace, trill, tremolo picking/bar) are presence flags until a later
 /// protocol version.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -71,12 +151,20 @@ pub struct NoteEffects {
     pub popping: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub fade_in: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub bend: bool,
+    #[serde(
+        default,
+        deserialize_with = "effect_compat::bend",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bend: Option<BendEffect>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub tremolo_bar: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub harmonic: bool,
+    #[serde(
+        default,
+        deserialize_with = "effect_compat::harmonic",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub harmonic: Option<HarmonicEffect>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub grace: bool,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -189,4 +277,50 @@ pub struct Selection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caret: Option<CaretPosition>,
     pub revision: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn harmonic_and_bend_round_trip() {
+        let effects = NoteEffects {
+            palm_mute: true,
+            harmonic: Some(HarmonicEffect::pinch()),
+            bend: Some(BendEffect {
+                points: vec![
+                    BendPoint {
+                        position: 0,
+                        value: 0,
+                    },
+                    BendPoint {
+                        position: 6,
+                        value: 2,
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&effects).unwrap();
+        assert!(json.contains(r#""harmonic":{"type":"pinch"}"#), "{json}");
+        assert!(
+            json.contains(
+                r#""bend":{"points":[{"position":0,"value":0},{"position":6,"value":2}]}"#
+            ),
+            "{json}"
+        );
+        let back: NoteEffects = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, effects);
+    }
+
+    #[test]
+    fn legacy_boolean_effects_still_parse() {
+        let json = r#"{"harmonic":true,"bend":true,"palmMute":true}"#;
+        let effects: NoteEffects = serde_json::from_str(json).unwrap();
+        assert_eq!(effects.harmonic, Some(HarmonicEffect::natural()));
+        assert_eq!(effects.bend, Some(BendEffect::default()));
+        let none: NoteEffects = serde_json::from_str(r#"{"harmonic":false}"#).unwrap();
+        assert_eq!(none.harmonic, None);
+    }
 }
