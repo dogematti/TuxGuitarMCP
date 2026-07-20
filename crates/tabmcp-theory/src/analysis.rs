@@ -42,8 +42,13 @@ const SCALES: &[(&str, &[u8])] = &[
     ("blues", &[0, 3, 5, 6, 7, 10]),
     ("dorian", &[0, 2, 3, 5, 7, 9, 10]),
     ("phrygian", &[0, 1, 3, 5, 7, 8, 10]),
+    ("phrygian dominant", &[0, 1, 4, 5, 7, 8, 10]),
     ("lydian", &[0, 2, 4, 6, 7, 9, 11]),
     ("mixolydian", &[0, 2, 4, 5, 7, 9, 10]),
+    ("locrian", &[0, 1, 3, 5, 6, 8, 10]),
+    ("hungarian minor", &[0, 2, 3, 6, 7, 8, 11]),
+    ("double harmonic", &[0, 1, 4, 5, 7, 8, 11]),
+    ("half-whole diminished", &[0, 1, 3, 4, 6, 7, 9, 10]),
 ];
 
 /// Duration-weighted pitch-class histogram, normalized to sum 1.
@@ -400,5 +405,29 @@ mod chord_name_tests {
         assert_eq!(chord_name(&[7, 11, 2, 5]).as_deref(), Some("G7"));
         assert_eq!(chord_name(&[5]).as_deref(), None);
         assert_eq!(chord_name(&[0, 1, 2]).as_deref(), None);
+    }
+}
+
+#[cfg(test)]
+mod metal_scale_tests {
+    use super::*;
+
+    #[test]
+    fn detects_e_phrygian_dominant() {
+        // E F G# A B C D — the flamenco/metal staple, root-anchored on E.
+        let riff: Vec<NoteEvent> = [40u8, 41, 44, 45, 47, 48, 50, 48, 47, 45, 44, 41, 40]
+            .iter()
+            .map(|&pitch| NoteEvent { pitch, weight: 480 })
+            .collect();
+        let best = &detect_scales(&riff)[0];
+        assert_eq!(
+            (best.root.as_str(), best.scale.as_str()),
+            ("E", "phrygian dominant"),
+            "got {} {}",
+            best.root,
+            best.scale
+        );
+        // Harmony generation can voice in it too.
+        assert!(scale_pitch_classes(4, "phrygian dominant").is_some());
     }
 }

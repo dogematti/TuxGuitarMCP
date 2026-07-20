@@ -233,6 +233,11 @@ impl BridgeClient {
         self.call("play", &json!({}))
     }
 
+    /// Fire a toggle-style transport action by id (metronome, count-down).
+    pub fn toggle(&mut self, action_id: &str) -> Result<serde_json::Value, BridgeError> {
+        self.call("toggle_action", &json!({ "actionId": action_id }))
+    }
+
     /// Move the caret/playback position to a measure and start playing.
     pub fn play_from(&mut self, measure: u32) -> Result<serde_json::Value, BridgeError> {
         self.call("play_from", &json!({ "measure": measure }))

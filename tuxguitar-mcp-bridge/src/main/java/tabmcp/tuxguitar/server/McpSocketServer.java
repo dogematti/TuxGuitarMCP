@@ -182,6 +182,8 @@ public class McpSocketServer {
 				return this.service.exportSong(params);
 			case "render_midi":
 				return this.service.renderMidi();
+			case "toggle_action":
+				return this.service.toggleAction(params);
 			case "play":
 				return this.service.play();
 			case "play_from":

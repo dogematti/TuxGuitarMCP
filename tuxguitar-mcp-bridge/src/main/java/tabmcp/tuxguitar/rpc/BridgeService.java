@@ -36,7 +36,7 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.6.0";
+	public static final String PLUGIN_VERSION = "0.6.1";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 
@@ -669,6 +669,22 @@ public class BridgeService {
 		JsonObject result = new JsonObject();
 		result.addProperty("fromMeasure", measure);
 		result.addProperty("playing", true);
+		return result;
+	}
+
+	/** Fire a WHITELISTED toggle action (metronome / count-in). */
+	public JsonObject toggleAction(JsonObject params) throws RpcException {
+		String actionId = (params.has("actionId") && !params.get("actionId").isJsonNull())
+			? params.get("actionId").getAsString() : "";
+		if (!"action.transport.metronome".equals(actionId)
+			&& !"action.transport.count-down".equals(actionId)) {
+			throw new RpcException(RpcException.UNSUPPORTED,
+				"action not allowed over the bridge: " + actionId);
+		}
+		new app.tuxguitar.editor.action.TGActionProcessor(this.context, actionId)
+			.processOnCurrentThread();
+		JsonObject result = new JsonObject();
+		result.addProperty("toggled", actionId);
 		return result;
 	}
 

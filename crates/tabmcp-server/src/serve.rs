@@ -250,6 +250,10 @@ struct GenerateParams {
     /// Harmony only: "third" (default) or "sixth".
     #[serde(default)]
     interval: Option<String>,
+    /// Drums only: groove style — "rock" (default), "metal-gallop",
+    /// "punk", or "halftime".
+    #[serde(default)]
+    style: Option<String>,
     /// False (default): preview what would be generated. True: create the
     /// new track and write the line — requires expected_revision.
     #[serde(default)]
@@ -1123,7 +1127,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "Generate a basic rock/metal drum part locked to the source passage's accents: closed hi-hat eighths, snare backbeats, kick doubling the guitar's low-register hits (plus the downbeat). Written to a NEW percussion track. Defaults to the selection. TWO-STEP: preview first, then confirm=true with expected_revision (undoable).",
+        description = "Generate a drum part in a groove style — 'rock' (default, kicks follow the guitar's accents), 'metal-gallop' (sixteenth kick gallop + ride), 'punk' (driving eighth kicks, open hats), 'halftime' (heavy, snare on 3). Written to a NEW percussion track. Defaults to the selection. TWO-STEP: preview first, then confirm=true with expected_revision (undoable).",
         annotations(
             title = "Generate drums",
             read_only_hint = false,
@@ -1247,6 +1251,28 @@ impl TabMcp {
             notes_before: None,
             notes_after: None,
         }))
+    }
+
+    #[tool(
+        description = "Toggle TuxGuitar's metronome click on/off for practice (state persists across plays).",
+        annotations(title = "Metronome", read_only_hint = false, destructive_hint = false)
+    )]
+    async fn tuxguitar_toggle_metronome(&self) -> Result<String, ErrorData> {
+        self.call_bridge(|client| client.toggle("action.transport.metronome"))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok("Metronome toggled.".into())
+    }
+
+    #[tool(
+        description = "Toggle TuxGuitar's count-in (count-down before playback starts) on/off — useful when practicing over the loop.",
+        annotations(title = "Count-in", read_only_hint = false, destructive_hint = false)
+    )]
+    async fn tuxguitar_toggle_count_in(&self) -> Result<String, ErrorData> {
+        self.call_bridge(|client| client.toggle("action.transport.count-down"))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok("Count-in toggled.".into())
     }
 
     #[tool(
@@ -2059,9 +2085,13 @@ impl TabMcp {
                 )
             }
             GenerateKind::Drums => {
-                let (measures, description) =
-                    tabmcp_theory::generation::generate_drums(&range.measures, &source_tuning)
-                        .map_err(|e| ErrorData::invalid_params(e, None))?;
+                let style = p.style.clone().unwrap_or_else(|| "rock".into());
+                let (measures, description) = tabmcp_theory::generation::generate_drums(
+                    &range.measures,
+                    &source_tuning,
+                    &style,
+                )
+                .map_err(|e| ErrorData::invalid_params(e, None))?;
                 // Percussion strings are tuned to 0 so fret == drum key.
                 let strings: Vec<tabmcp_model::StringTuning> = (1..=6)
                     .map(|number| tabmcp_model::StringTuning {

@@ -299,99 +299,192 @@ pub fn generate_harmony(
 pub const DRUM_KICK: u32 = 36;
 pub const DRUM_SNARE: u32 = 38;
 pub const DRUM_HIHAT_CLOSED: u32 = 42;
+pub const DRUM_HIHAT_OPEN: u32 = 46;
+pub const DRUM_CRASH: u32 = 49;
+pub const DRUM_RIDE: u32 = 51;
 
-/// Generate a basic rock/metal drum part locked to the source's accents:
-/// closed hi-hat eighths, snare backbeats (beats 2 and 4), kick doubling
-/// the source's low-register onsets. Written for a percussion track whose
-/// strings are all tuned to 0, so fret == drum key.
-/// Assumes 4/4-ish measures (the eighth grid spans 8 slots); odd meters
-/// get hi-hats only on actual source onsets.
+/// One templated hit: (offset ticks, drum key, velocity).
+type Hit = (u64, u32, u32);
+
+/// A named groove template for one 4/4 measure (960 ticks per quarter).
+/// `follow_accents`: whether kicks additionally double the source's
+/// low-register onsets (the original "rock" behavior).
+struct GrooveTemplate {
+    name: &'static str,
+    hits: &'static [Hit],
+    follow_accents: bool,
+}
+
+const E: u64 = 480; // eighth
+const S: u64 = 240; // sixteenth
+
+const GROOVES: &[GrooveTemplate] = &[
+    GrooveTemplate {
+        name: "rock",
+        hits: &[
+            (0, DRUM_KICK, 100),
+            (2 * E, DRUM_SNARE, 95),
+            (4 * E, DRUM_KICK, 100),
+            (6 * E, DRUM_SNARE, 95),
+            (0, DRUM_HIHAT_CLOSED, 80),
+            (E, DRUM_HIHAT_CLOSED, 70),
+            (2 * E, DRUM_HIHAT_CLOSED, 80),
+            (3 * E, DRUM_HIHAT_CLOSED, 70),
+            (4 * E, DRUM_HIHAT_CLOSED, 80),
+            (5 * E, DRUM_HIHAT_CLOSED, 70),
+            (6 * E, DRUM_HIHAT_CLOSED, 80),
+            (7 * E, DRUM_HIHAT_CLOSED, 70),
+        ],
+        follow_accents: true,
+    },
+    GrooveTemplate {
+        name: "metal-gallop",
+        // Kick gallop (eighth + two sixteenths) per beat, snare backbeats,
+        // ride carrying the pulse.
+        hits: &[
+            (0, DRUM_KICK, 105),
+            (2 * S, DRUM_KICK, 90),
+            (3 * S, DRUM_KICK, 90),
+            (2 * E, DRUM_SNARE, 100),
+            (4 * E, DRUM_KICK, 105),
+            (4 * E + 2 * S, DRUM_KICK, 90),
+            (4 * E + 3 * S, DRUM_KICK, 90),
+            (6 * E, DRUM_SNARE, 100),
+            (0, DRUM_RIDE, 85),
+            (E, DRUM_RIDE, 70),
+            (2 * E, DRUM_RIDE, 85),
+            (3 * E, DRUM_RIDE, 70),
+            (4 * E, DRUM_RIDE, 85),
+            (5 * E, DRUM_RIDE, 70),
+            (6 * E, DRUM_RIDE, 85),
+            (7 * E, DRUM_RIDE, 70),
+        ],
+        follow_accents: false,
+    },
+    GrooveTemplate {
+        name: "punk",
+        // Driving: kick on every downbeat eighth, snare 2 and 4, loud hats.
+        hits: &[
+            (0, DRUM_KICK, 105),
+            (E, DRUM_KICK, 95),
+            (2 * E, DRUM_SNARE, 105),
+            (3 * E, DRUM_KICK, 95),
+            (4 * E, DRUM_KICK, 105),
+            (5 * E, DRUM_KICK, 95),
+            (6 * E, DRUM_SNARE, 105),
+            (7 * E, DRUM_KICK, 95),
+            (0, DRUM_HIHAT_OPEN, 90),
+            (2 * E, DRUM_HIHAT_OPEN, 90),
+            (4 * E, DRUM_HIHAT_OPEN, 90),
+            (6 * E, DRUM_HIHAT_OPEN, 90),
+        ],
+        follow_accents: false,
+    },
+    GrooveTemplate {
+        name: "halftime",
+        // Heavy: snare only on beat 3, sparse kicks, open feel.
+        hits: &[
+            (0, DRUM_KICK, 105),
+            (3 * E, DRUM_KICK, 90),
+            (4 * E, DRUM_SNARE, 105),
+            (0, DRUM_HIHAT_CLOSED, 80),
+            (E, DRUM_HIHAT_CLOSED, 65),
+            (2 * E, DRUM_HIHAT_CLOSED, 80),
+            (3 * E, DRUM_HIHAT_CLOSED, 65),
+            (4 * E, DRUM_HIHAT_CLOSED, 80),
+            (5 * E, DRUM_HIHAT_CLOSED, 65),
+            (6 * E, DRUM_HIHAT_CLOSED, 80),
+            (7 * E, DRUM_HIHAT_CLOSED, 65),
+        ],
+        follow_accents: true,
+    },
+];
+
+/// Names of the available drum groove styles.
+pub fn drum_styles() -> Vec<&'static str> {
+    GROOVES.iter().map(|g| g.name).collect()
+}
+
+/// Generate a drum part in a named groove style ("rock", "metal-gallop",
+/// "punk", "halftime"), locked to the source where the style follows
+/// accents. Percussion track convention: strings tuned to 0, fret = key.
+/// Assumes 4/4-ish measures.
 pub fn generate_drums(
     source: &[Measure],
     source_tuning: Tuning,
+    style: &str,
 ) -> Result<(Vec<Measure>, String), String> {
+    let template = GROOVES.iter().find(|g| g.name == style).ok_or_else(|| {
+        format!(
+            "unknown drum style '{style}'; available: {}",
+            drum_styles().join(", ")
+        )
+    })?;
     let all_onsets = onsets(source, source_tuning);
     if all_onsets.is_empty() {
         return Err("the source passage contains no notes to follow".into());
     }
-    let eighth = Duration {
-        value: 8,
-        dotted: false,
-        double_dotted: false,
-        tuplet: Tuplet {
-            enters: 1,
-            times: 1,
-        },
-    };
 
     let mut measures = Vec::with_capacity(source.len());
-    let mut kicks = 0usize;
-    for (index, template) in source.iter().enumerate() {
-        let measure_onsets: Vec<&Onset> = all_onsets
-            .iter()
-            .filter(|o| o.measure_index == index)
-            .collect();
-        let low_threshold = measure_onsets
-            .iter()
-            .map(|o| o.pitch)
-            .min()
-            .unwrap_or(0)
-            .saturating_add(2);
-
-        // offset -> drum keys at that slot
-        let mut slots: std::collections::BTreeMap<u64, Vec<u32>> =
+    let mut extra_kicks = 0usize;
+    for (index, template_measure) in source.iter().enumerate() {
+        // offset -> hits at that slot
+        let mut slots: std::collections::BTreeMap<u64, Vec<(u32, u32)>> =
             std::collections::BTreeMap::new();
-        for slot in 0..8u64 {
-            slots.insert(slot * 480, vec![DRUM_HIHAT_CLOSED]);
+        for &(offset, key, velocity) in template.hits {
+            slots.entry(offset).or_default().push((key, velocity));
         }
-        for onset in &measure_onsets {
-            slots
-                .entry(onset.offset)
-                .or_insert_with(|| vec![DRUM_HIHAT_CLOSED]);
-        }
-        for &backbeat in &[960u64, 2880] {
-            slots.entry(backbeat).or_default().push(DRUM_SNARE);
-        }
-        for onset in &measure_onsets {
-            if onset.pitch <= low_threshold {
-                let keys = slots.entry(onset.offset).or_default();
-                if !keys.contains(&DRUM_KICK) {
-                    keys.push(DRUM_KICK);
-                    kicks += 1;
+        if template.follow_accents {
+            let measure_onsets: Vec<&Onset> = all_onsets
+                .iter()
+                .filter(|o| o.measure_index == index)
+                .collect();
+            let low_threshold = measure_onsets
+                .iter()
+                .map(|o| o.pitch)
+                .min()
+                .unwrap_or(0)
+                .saturating_add(2);
+            for onset in &measure_onsets {
+                if onset.pitch <= low_threshold {
+                    let hits = slots.entry(onset.offset).or_default();
+                    if !hits.iter().any(|&(key, _)| key == DRUM_KICK) {
+                        hits.push((DRUM_KICK, 100));
+                        extra_kicks += 1;
+                    }
                 }
             }
-        }
-        // A drummer anchors the downbeat regardless of what the guitar does.
-        let downbeat = slots.entry(0).or_default();
-        if !downbeat.contains(&DRUM_KICK) {
-            downbeat.push(DRUM_KICK);
-            kicks += 1;
         }
 
         let beats = slots
             .into_iter()
-            .map(|(offset, keys)| Beat {
+            .map(|(offset, hits)| Beat {
                 start_tick: offset,
                 voices: vec![Voice {
                     index: 0,
-                    duration: eighth.clone(),
+                    duration: Duration {
+                        // Off-eighth slots (gallop sixteenths) get sixteenths.
+                        value: if offset % 480 == 0 { 8 } else { 16 },
+                        dotted: false,
+                        double_dotted: false,
+                        tuplet: Tuplet {
+                            enters: 1,
+                            times: 1,
+                        },
+                    },
                     is_rest: false,
-                    notes: keys
+                    notes: hits
                         .into_iter()
-                        .map(|key| Note {
-                            // Distinct strings per instrument; fret = drum key
-                            // (percussion strings are tuned to 0).
+                        .map(|(key, velocity)| Note {
                             string: match key {
                                 DRUM_KICK => 6,
                                 DRUM_SNARE => 4,
+                                DRUM_CRASH => 2,
+                                DRUM_RIDE => 3,
                                 _ => 1,
                             },
                             fret: key,
-                            velocity: match key {
-                                DRUM_KICK => 100,
-                                DRUM_SNARE => 95,
-                                _ => 75,
-                            },
+                            velocity,
                             tied: false,
                             effects: NoteEffects::default(),
                         })
@@ -400,15 +493,20 @@ pub fn generate_drums(
             })
             .collect();
         measures.push(Measure {
-            number: template.number,
+            number: template_measure.number,
             start_tick: 0,
-            key_signature: template.key_signature,
+            key_signature: template_measure.key_signature,
             beats,
         });
     }
     let description = format!(
-        "closed hi-hat eighths, snare on beats 2 and 4, {kicks} kick(s) doubling the \
-         source's low-register accents"
+        "'{}' groove{}",
+        template.name,
+        if template.follow_accents {
+            format!(" with {extra_kicks} kick(s) doubling the source's low-register accents")
+        } else {
+            String::new()
+        }
     );
     Ok((measures, description))
 }
@@ -569,7 +667,8 @@ mod tests {
 
     #[test]
     fn drums_lock_to_accents_and_backbeats() {
-        let (measures, description) = generate_drums(&source(), STANDARD).expect("generates");
+        let (measures, description) =
+            generate_drums(&source(), STANDARD, "rock").expect("generates");
         assert_eq!(measures.len(), 2);
         for measure in &measures {
             let mut has_snare_backbeat = false;
@@ -592,7 +691,21 @@ mod tests {
                 "kick must land on beat 1 (lowest source note)"
             );
         }
-        assert!(description.contains("hi-hat"), "{description}");
+        assert!(description.contains("'rock' groove"), "{description}");
+
+        // Style templates: gallop has sixteenth kicks, punk has open hats,
+        // and unknown styles fail with the available list.
+        let (gallop, _) = generate_drums(&source(), STANDARD, "metal-gallop").expect("gallop");
+        assert!(
+            gallop[0].beats.iter().any(|b| b.start_tick % 480 != 0
+                && b.voices[0].notes.iter().any(|n| n.fret == DRUM_KICK)),
+            "gallop must place kicks on sixteenth offsets"
+        );
+        let (punk, _) = generate_drums(&source(), STANDARD, "punk").expect("punk");
+        assert!(punk[0]
+            .beats
+            .iter()
+            .any(|b| b.voices[0].notes.iter().any(|n| n.fret == DRUM_HIHAT_OPEN)));
     }
 
     #[test]
@@ -604,6 +717,8 @@ mod tests {
             beats: vec![],
         }];
         assert!(generate_bassline(&empty, STANDARD, BASS, 24).is_err());
+        assert!(generate_drums(&empty, STANDARD, "rock").is_err());
+        assert!(generate_drums(&source(), STANDARD, "nope").is_err());
         assert!(generate_harmony(&empty, STANDARD, 24, "third").is_err());
     }
 }
