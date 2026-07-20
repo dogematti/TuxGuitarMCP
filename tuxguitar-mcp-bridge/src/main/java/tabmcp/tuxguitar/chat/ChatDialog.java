@@ -123,29 +123,42 @@ public class ChatDialog {
 		dialogLayout.set(this.transcript, 1, 1, UITableLayout.ALIGN_FILL,
 			UITableLayout.ALIGN_FILL, true, true, 1, 1, 680f, 440f, null);
 
-		// Status row: progress spinner + status text.
-		UITableLayout statusLayout = new UITableLayout(0f);
-		UIPanel statusRow = uiFactory.createPanel(this.dialog, false);
-		statusRow.setLayout(statusLayout);
-		dialogLayout.set(statusRow, 2, 1, UITableLayout.ALIGN_FILL,
+		// Input: full-width, directly under the transcript.
+		this.input = uiFactory.createTextArea(this.dialog, true, false);
+		this.input.setFont(monoInput);
+		dialogLayout.set(this.input, 2, 1, UITableLayout.ALIGN_FILL,
+			UITableLayout.ALIGN_FILL, true, false, 1, 1, null, 88f, null);
+		this.input.addKeyPressedListener(new UIKeyPressedListener() {
+			public void onKeyPressed(UIKeyEvent event) {
+				if (event.getKeyCombination().contains(UIKey.ENTER)) {
+					sendCurrentInput();
+				}
+			}
+		});
+
+		// Bottom bar: progress + status on the left, pickers and buttons right.
+		UITableLayout barLayout = new UITableLayout(0f);
+		UIPanel bar = uiFactory.createPanel(this.dialog, false);
+		bar.setLayout(barLayout);
+		dialogLayout.set(bar, 3, 1, UITableLayout.ALIGN_FILL,
 			UITableLayout.ALIGN_CENTER, true, false);
 
-		this.progress = uiFactory.createIndeterminateProgressBar(statusRow);
+		this.progress = uiFactory.createIndeterminateProgressBar(bar);
 		this.progress.setVisible(false);
-		statusLayout.set(this.progress, 1, 1, UITableLayout.ALIGN_LEFT,
-			UITableLayout.ALIGN_CENTER, false, false, 1, 1, 90f, null, null);
+		barLayout.set(this.progress, 1, 1, UITableLayout.ALIGN_LEFT,
+			UITableLayout.ALIGN_CENTER, false, false, 1, 1, 80f, null, null);
 
-		this.statusLabel = uiFactory.createLabel(statusRow);
+		this.statusLabel = uiFactory.createLabel(bar);
 		this.statusLabel.setFont(monoSmall);
 		this.statusLabel.setText("ready");
-		statusLayout.set(this.statusLabel, 1, 2, UITableLayout.ALIGN_LEFT,
+		barLayout.set(this.statusLabel, 1, 2, UITableLayout.ALIGN_LEFT,
 			UITableLayout.ALIGN_CENTER, true, false);
 
-		// Right column: quick actions stacked over the model picker.
+		// Stacked pickers: quick actions over the model select.
 		UITableLayout rightLayout = new UITableLayout(0f);
-		UIPanel rightPanel = uiFactory.createPanel(statusRow, false);
+		UIPanel rightPanel = uiFactory.createPanel(bar, false);
 		rightPanel.setLayout(rightLayout);
-		statusLayout.set(rightPanel, 1, 3, UITableLayout.ALIGN_RIGHT,
+		barLayout.set(rightPanel, 1, 3, UITableLayout.ALIGN_RIGHT,
 			UITableLayout.ALIGN_CENTER, false, false);
 
 		this.templateSelect = uiFactory.createDropDownSelect(rightPanel);
@@ -163,7 +176,7 @@ public class ChatDialog {
 			}
 		});
 		rightLayout.set(this.templateSelect, 1, 1, UITableLayout.ALIGN_FILL,
-			UITableLayout.ALIGN_CENTER, true, false, 1, 1, 210f, null, null);
+			UITableLayout.ALIGN_CENTER, true, false, 1, 1, 200f, null, null);
 
 		UITableLayout modelRowLayout = new UITableLayout(0f);
 		UIPanel modelRow = uiFactory.createPanel(rightPanel, false);
@@ -184,38 +197,19 @@ public class ChatDialog {
 		this.modelSelect.addItem(new UISelectItem<String>("haiku", "haiku"));
 		this.modelSelect.setSelectedValue("");
 		modelRowLayout.set(this.modelSelect, 1, 2, UITableLayout.ALIGN_FILL,
-			UITableLayout.ALIGN_CENTER, true, false, 1, 1, 140f, null, null);
+			UITableLayout.ALIGN_CENTER, true, false, 1, 1, 130f, null, null);
 
-		// Input row.
-		UITableLayout inputLayout = new UITableLayout(0f);
-		UIPanel inputRow = uiFactory.createPanel(this.dialog, false);
-		inputRow.setLayout(inputLayout);
-		dialogLayout.set(inputRow, 3, 1, UITableLayout.ALIGN_FILL,
-			UITableLayout.ALIGN_CENTER, true, false);
-
-		this.input = uiFactory.createTextArea(inputRow, true, false);
-		this.input.setFont(monoInput);
-		inputLayout.set(this.input, 1, 1, UITableLayout.ALIGN_FILL,
-			UITableLayout.ALIGN_FILL, true, false, 1, 1, 520f, 64f, null);
-		this.input.addKeyPressedListener(new UIKeyPressedListener() {
-			public void onKeyPressed(UIKeyEvent event) {
-				if (event.getKeyCombination().contains(UIKey.ENTER)) {
-					sendCurrentInput();
-				}
-			}
-		});
-
-		this.sendButton = uiFactory.createButton(inputRow);
+		this.sendButton = uiFactory.createButton(bar);
 		this.sendButton.setText("Send");
 		this.sendButton.addSelectionListener(new UISelectionListener() {
 			public void onSelect(UISelectionEvent event) {
 				sendCurrentInput();
 			}
 		});
-		inputLayout.set(this.sendButton, 1, 2, UITableLayout.ALIGN_CENTER,
+		barLayout.set(this.sendButton, 1, 4, UITableLayout.ALIGN_CENTER,
 			UITableLayout.ALIGN_CENTER, false, false);
 
-		this.stopButton = uiFactory.createButton(inputRow);
+		this.stopButton = uiFactory.createButton(bar);
 		this.stopButton.setText("Stop");
 		this.stopButton.setEnabled(false);
 		this.stopButton.addSelectionListener(new UISelectionListener() {
@@ -224,10 +218,10 @@ public class ChatDialog {
 				setStatus("stopped");
 			}
 		});
-		inputLayout.set(this.stopButton, 1, 3, UITableLayout.ALIGN_CENTER,
+		barLayout.set(this.stopButton, 1, 5, UITableLayout.ALIGN_CENTER,
 			UITableLayout.ALIGN_CENTER, false, false);
 
-		this.resetButton = uiFactory.createButton(inputRow);
+		this.resetButton = uiFactory.createButton(bar);
 		this.resetButton.setText("New Session");
 		this.resetButton.addSelectionListener(new UISelectionListener() {
 			public void onSelect(UISelectionEvent event) {
@@ -239,7 +233,7 @@ public class ChatDialog {
 				setStatus("ready (fresh session)");
 			}
 		});
-		inputLayout.set(this.resetButton, 1, 4, UITableLayout.ALIGN_CENTER,
+		barLayout.set(this.resetButton, 1, 6, UITableLayout.ALIGN_CENTER,
 			UITableLayout.ALIGN_CENTER, false, false);
 
 		TGDialogUtil.openDialog(this.dialog,
