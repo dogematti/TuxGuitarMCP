@@ -10,3 +10,4 @@ tuxguitar-mcp-bridge/target/
 
 # Local runtime state
 *.log
+tuxguitar-mcp-bridge/dependency-reduced-pom.xml

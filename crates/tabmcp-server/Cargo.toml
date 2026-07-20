@@ -1,0 +1,17 @@
+[package]
+name = "tabmcp-server"
+description = "TabMCP binary: MCP server for TuxGuitar plus doctor/bridge-sim utilities"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "tabmcp"
+path = "src/main.rs"
+
+[dependencies]
+tabmcp-model = { path = "../tabmcp-model" }
+tabmcp-theory = { path = "../tabmcp-theory" }
+tabmcp-bridge = { path = "../tabmcp-bridge" }
+serde_json.workspace = true

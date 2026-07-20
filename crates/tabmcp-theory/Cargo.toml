@@ -1,0 +1,9 @@
+[package]
+name = "tabmcp-theory"
+description = "Editor-independent music theory: pitch math, analysis (grows in later phases)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

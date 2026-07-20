@@ -1,0 +1,14 @@
+[package]
+name = "tabmcp-bridge"
+description = "JSON-RPC client for the TuxGuitar bridge plugin, plus a bridge simulator for tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tabmcp-model = { path = "../tabmcp-model" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+getrandom.workspace = true
