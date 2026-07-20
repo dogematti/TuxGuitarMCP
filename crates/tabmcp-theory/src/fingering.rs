@@ -66,6 +66,26 @@ impl Default for CostModel {
 }
 
 impl CostModel {
+    /// Genre preset: metal — favors low compact positions and open strings
+    /// (chugs), punishes position shifts harder.
+    pub fn metal() -> Self {
+        CostModel {
+            low_position_bias: 0.12,
+            position_shift: 3.5,
+            open_transition: 0.15,
+            ..Default::default()
+        }
+    }
+
+    /// Resolve a preset by name ("default" | "metal").
+    pub fn preset(name: &str) -> Option<Self> {
+        match name {
+            "default" => Some(CostModel::default()),
+            "metal" => Some(CostModel::metal()),
+            _ => None,
+        }
+    }
+
     /// All places a pitch can be played on the given tuning under this model.
     fn candidates(&self, pitch: u8, tuning: Tuning, max_fret: u32) -> Vec<Position> {
         tuning

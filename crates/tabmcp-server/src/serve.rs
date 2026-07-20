@@ -226,6 +226,10 @@ struct OptimizeFingeringParams {
     /// The revision returned by the preview call.
     #[serde(default)]
     expected_revision: Option<u64>,
+    /// Cost preset: "default" or "metal" (low compact positions, open-string
+    /// chug preference, stronger shift penalty).
+    #[serde(default)]
+    cost_preset: Option<String>,
     /// Lowest fret allowed for fretted notes (open strings stay allowed).
     #[serde(default)]
     min_fret: Option<u32>,
@@ -329,6 +333,27 @@ struct ImportMidiParams {
     #[serde(default)]
     midi_track: Option<usize>,
     /// False (default): preview. True: create the track and write.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call.
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct CopyMeasuresParams {
+    /// Track to copy from (1-based).
+    source_track: u32,
+    /// First source measure (1-based).
+    from_measure: u32,
+    /// Last source measure (inclusive).
+    to_measure: u32,
+    /// Destination measure (1-based); content there is replaced.
+    dest_measure: u32,
+    /// Destination track (default: same as source).
+    #[serde(default)]
+    dest_track: Option<u32>,
+    /// False (default): preview. True: apply - requires expected_revision.
     #[serde(default)]
     confirm: bool,
     /// The revision returned by the preview call.
@@ -1062,7 +1087,11 @@ impl TabMcp {
             ));
         }
 
-        let mut model = tabmcp_theory::fingering::CostModel::default();
+        let mut model = p
+            .cost_preset
+            .as_deref()
+            .and_then(tabmcp_theory::fingering::CostModel::preset)
+            .unwrap_or_default();
         if p.min_fret.is_some() || p.max_fret_limit.is_some() {
             model.fret_range = Some((
                 p.min_fret.unwrap_or(0),
@@ -1190,7 +1219,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "Generate a drum part in a groove style — 'rock' (default, kicks follow the guitar's accents), 'metal-gallop' (sixteenth kick gallop + ride), 'punk' (driving eighth kicks, open hats), 'halftime' (heavy, snare on 3). Written to a NEW percussion track. Defaults to the selection. TWO-STEP: preview first, then confirm=true with expected_revision (undoable).",
+        description = "Generate a drum part in a groove style — 'rock' (default, kicks follow the guitar's accents), 'metal-gallop' (sixteenth kick gallop + ride), 'punk' (driving eighth kicks, open hats), 'halftime', 'blast' (alternating kick/snare 16ths), 'd-beat'. Written to a NEW percussion track (or target_track). Defaults to the selection. TWO-STEP: preview first, then confirm=true with expected_revision (undoable).",
         annotations(
             title = "Generate drums",
             read_only_hint = false,
@@ -1805,6 +1834,85 @@ impl TabMcp {
     }
 
     #[tool(
+        description = "Copy a measure range to another place (same or different track) - song forms without resending content. Destination content is replaced (appended past the end). TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
+        annotations(
+            title = "Copy measures",
+            read_only_hint = false,
+            destructive_hint = true
+        )
+    )]
+    async fn tuxguitar_copy_measures(
+        &self,
+        params: Parameters<CopyMeasuresParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        if p.from_measure == 0
+            || p.to_measure < p.from_measure
+            || p.to_measure - p.from_measure + 1 > MAX_MEASURES_PER_READ
+        {
+            return Err(ErrorData::invalid_params(
+                format!("invalid source range (max {MAX_MEASURES_PER_READ} measures)"),
+                None,
+            ));
+        }
+        let source_track = p.source_track;
+        let (from, to) = (p.from_measure, p.to_measure);
+        let range = self
+            .call_bridge(move |client| client.read_measures(source_track, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let mut measures = range.measures;
+        for (i, measure) in measures.iter_mut().enumerate() {
+            measure.number = p.dest_measure + i as u32;
+        }
+        let count = measures.len() as u32;
+        let dest_track = p.dest_track.unwrap_or(p.source_track);
+        let notes = count_notes(&measures);
+
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY - nothing changed. Would copy measures {from}-{to} of track \
+                     {source_track} ({notes} notes) to measures {}-{} of track {dest_track}. \
+                     To apply, call again with confirm=true and expected_revision={}.",
+                    p.dest_measure,
+                    p.dest_measure + count - 1,
+                    range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: None,
+                notes_after: Some(notes),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let dest_from = p.dest_measure;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(dest_track, dest_from, &measures, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied: copied {count} measure(s) to track {dest_track} at measure \
+                 {dest_from}. The user can undo with Cmd+Z.",
+            ),
+            revision: result.new_revision,
+            measures_added: Some(result.measures_added),
+            notes_before: Some(result.notes_before),
+            notes_after: Some(result.notes_after),
+        }))
+    }
+
+    #[tool(
         description = "Set a section marker on a measure (e.g. 'Verse', 'Chorus') — visible in TuxGuitar and usable for song-structure navigation. Empty title clears the marker.",
         annotations(title = "Set marker", read_only_hint = false, destructive_hint = false)
     )]
@@ -1955,6 +2063,12 @@ impl TabMcp {
                     high * 100.0,
                     if analysis.clipped_samples > 0 { " CLIPPING" } else { "" },
                 ));
+                    if analysis.peak_dbfs < -60.0 {
+                        out.push_str(
+                            "  PRESCRIPTION: essentially silent in isolation - notes likely sit \
+                         below the soundfont sampled range; transpose the part up an octave\n",
+                        );
+                    }
                 }
                 Ok(out)
             })
