@@ -50,9 +50,104 @@ pub const STYLES: &[StyleGuide] = &[
     StyleGuide { name: "surf", scales: "hirajoshi, harmonic minor", tempo: "140-180", cells: "straight tremolo 8ths/16ths", techniques: "tremoloPicking melody on strings 1-2", drums: "rock", devices: "minor-key double-picked melody; dramatic whole-band stops", tuning: "6-string standard", meters: "4/4", sections: "melody A -> melody B -> full-band stops -> A out; keep it short", mood: "urgent retro cool", difficulty: "intermediate (tremolo stamina)", avoid: "palm-muted chug, downtuning, breakdowns", tempo_range: (140, 180), syncopation: (0.10, 0.40) },
 ];
 
+/// Instrument roles: what each part is FOR, independent of genre. The same
+/// rules the generators encode, stated for the composer.
+pub const ROLES: &str = "INSTRUMENT ROLES:\n\
+  Rhythm guitar: the engine - carries the riff, locks with the kick, owns the low-mids; palm-mute articulation is its dynamics.\n\
+  Lead guitar: the voice - melody and hooks ABOVE the rhythm's register; needs space (do not chug under a lead in the same octave).\n\
+  Bass: the glue - follows the rhythm guitar's ACCENTS (not its every note), roots the harmony, stays in its own octave so stems stay audible.\n\
+  Kick: the pulse - anchors downbeats always; doubles the guitar's accent pattern in breakdowns (unison = weight).\n\
+  Snare: the backbeat - 2 and 4 in straight feels, displaced hits are a statement; ghost notes add motion without volume.\n\
+  Cymbals: the energy ceiling - hats for tight sections, ride for open ones, crash marks section starts.";
+
 pub fn style_guide(name: &str) -> Option<&'static StyleGuide> {
     let wanted = name.trim().to_ascii_lowercase();
     STYLES.iter().find(|s| s.name == wanted)
+}
+
+/// Parse a genre-crossover spec like "60% death metal, 40% doom" or
+/// "djent + doom" (equal weights when no percentages). Returns normalized
+/// (weight, guide) pairs, heaviest first. None if any name is unknown or
+/// fewer than two styles are given.
+pub fn parse_blend(spec: &str) -> Option<Vec<(f64, &'static StyleGuide)>> {
+    let mut parts = Vec::new();
+    for raw in spec.split([',', '+']) {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let (weight, name) = match raw.split_once('%') {
+            Some((pct, rest)) => (pct.trim().parse::<f64>().ok()?, rest.trim()),
+            None => (1.0, raw),
+        };
+        parts.push((weight.max(0.0), style_guide(name)?));
+    }
+    if parts.len() < 2 {
+        return None;
+    }
+    let total: f64 = parts.iter().map(|(w, _)| w).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    for (w, _) in &mut parts {
+        *w /= total;
+    }
+    parts.sort_by(|a, b| b.0.total_cmp(&a.0));
+    Some(parts)
+}
+
+/// Describe a blend: stylistic characteristics merged by weight — never
+/// "copy riffs from X", always "borrow the traits".
+pub fn describe_blend(parts: &[(f64, &'static StyleGuide)]) -> String {
+    let name = parts
+        .iter()
+        .map(|(w, g)| format!("{:.0}% {}", w * 100.0, g.name))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let tempo_lo: f64 = parts
+        .iter()
+        .map(|(w, g)| w * g.tempo_range.0 as f64)
+        .sum();
+    let tempo_hi: f64 = parts
+        .iter()
+        .map(|(w, g)| w * g.tempo_range.1 as f64)
+        .sum();
+    let sync_lo: f64 = parts.iter().map(|(w, g)| w * g.syncopation.0).sum();
+    let sync_hi: f64 = parts.iter().map(|(w, g)| w * g.syncopation.1).sum();
+    let dominant = parts[0].1;
+    let mut out = format!(
+        "STYLE BLEND: {name}\n\
+         Structure and sections come from the dominant style ({}): {}\n\
+         Tempo: {:.0}-{:.0} BPM (weighted)\n\
+         Tuning: {} (dominant style's)\n",
+        dominant.name, dominant.sections, tempo_lo, tempo_hi, dominant.tuning,
+    );
+    for (weight, guide) in parts {
+        out.push_str(&format!(
+            "From {} ({:.0}%): scales {} | cells {} | signature {}\n",
+            guide.name,
+            weight * 100.0,
+            guide.scales,
+            guide.cells,
+            guide.devices,
+        ));
+    }
+    out.push_str(&format!(
+        "AVOID (union): {}\n\
+         Evaluation targets: tempo {:.0}-{:.0} BPM, syncopation {:.0}-{:.0}%\n\
+         Blend the CHARACTERISTICS - interval choices, rhythm, phrasing, density - \
+         never copy riffs from the source genres' bands.\n",
+        parts
+            .iter()
+            .map(|(_, g)| g.avoid)
+            .collect::<Vec<_>>()
+            .join("; "),
+        tempo_lo,
+        tempo_hi,
+        sync_lo * 100.0,
+        sync_hi * 100.0,
+    ));
+    out
 }
 
 pub fn describe(guide: &StyleGuide) -> String {
@@ -100,6 +195,23 @@ mod tests {
         let text = describe(style_guide("deathcore").unwrap());
         assert!(text.contains("DROP"), "{text}");
         assert!(text.contains("7-string A standard"), "{text}");
+    }
+
+    #[test]
+    fn blend_parses_weights_and_merges_targets() {
+        let parts = parse_blend("60% death metal, 40% doom").expect("parses");
+        assert_eq!(parts[0].1.name, "death metal");
+        assert!((parts[0].0 - 0.6).abs() < 1e-9);
+        let text = describe_blend(&parts);
+        assert!(text.contains("60% death metal + 40% doom"), "{text}");
+        assert!(text.contains("never copy riffs"), "{text}");
+        // Weighted tempo: 0.6*180+0.4*55 = 130 .. 0.6*260+0.4*90 = 192.
+        assert!(text.contains("130-192"), "{text}");
+        // Equal weights without percentages.
+        let equal = parse_blend("djent + doom").expect("parses");
+        assert!((equal[0].0 - 0.5).abs() < 1e-9);
+        assert!(parse_blend("60% yacht rock, 40% doom").is_none());
+        assert!(parse_blend("doom").is_none());
     }
 
     #[test]

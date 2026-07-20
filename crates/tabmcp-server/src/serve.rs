@@ -98,6 +98,33 @@ impl TabMcp {
         )]
     }
 
+    /// Review the open score as five band personalities, then fix by vote.
+    #[prompt(
+        name = "band",
+        description = "Band review: five personalities (composer, critic, producer, guitarist, listener) each judge the open score with their own tools, vote, and the top-voted fixes get applied."
+    )]
+    async fn band_prompt(&self) -> Vec<PromptMessage> {
+        vec![PromptMessage::new_text(
+            Role::User,
+            "Review the score currently open in TuxGuitar as five distinct band \
+             personalities, each using its own tools, each speaking in its own voice:\n\
+             1. THE COMPOSER - tuxguitar_track_themes and tuxguitar_riff_dna: do motifs \
+             develop across sections or does the song forget its own material?\n\
+             2. THE CRITIC - tuxguitar_evaluate and tuxguitar_hook_check: is anything \
+             here memorable? Reject freely; the critic is never polite.\n\
+             3. THE PRODUCER - tuxguitar_producer_notes and tuxguitar_style_match: does \
+             the arrangement build, drop, and land where it should?\n\
+             4. THE GUITARIST - tuxguitar_check_realism and tuxguitar_analyze_difficulty: \
+             can hands actually play this for a full take?\n\
+             5. THE LISTENER - tuxguitar_render_and_listen and tuxguitar_listen_stems: \
+             does the actual audio slap? Any instrument buried or boring?\n\
+             Then hold the vote: each personality names the ONE change it wants most. \
+             Apply the changes that get 2+ votes (preview -> confirm, all undoable), \
+             re-run tuxguitar_evaluate to confirm improvement, and report the band \
+             meeting minutes: who said what, what won the vote, what changed.",
+        )]
+    }
+
     /// Run the AI-Ear refinement loop on the current score.
     #[prompt(
         name = "refine",
@@ -526,6 +553,13 @@ struct EvaluateParams {
     /// "0.2,0.5,0.8,1.0,0.4") — the measured curve is compared against it.
     #[serde(default)]
     tension_target: Option<String>,
+    /// Emotional journey as comma- or arrow-separated feeling words (e.g.
+    /// "calm, uneasy, aggressive, victorious") — mapped onto the tension
+    /// scale and compared like tension_target. Vocabulary: calm, dreamy,
+    /// mournful, hopeless, brooding, uneasy, menacing, tense, driving,
+    /// epic, aggressive, triumphant, victorious, furious.
+    #[serde(default)]
+    emotion_target: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -535,6 +569,28 @@ struct RiffDnaParams {
     /// Source riff range (1-based, inclusive).
     from_measure: u32,
     to_measure: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct EvolveRiffParams {
+    /// Track (1-based).
+    track_number: u32,
+    /// Seed riff range (1-based, inclusive).
+    from_measure: u32,
+    to_measure: u32,
+    /// How many generations to evolve (default 4, max 8).
+    #[serde(default)]
+    generations: Option<u32>,
+    /// Where to write the winner (default: in place at from_measure).
+    #[serde(default)]
+    dest_measure: Option<u32>,
+    /// False (default): preview the lineage. True: apply - requires
+    /// expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call.
+    #[serde(default)]
+    expected_revision: Option<u64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -2055,7 +2111,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "Composition recipes per style: scales (from the 44-scale catalog), tempo range, rhythmic cells, techniques, matching drum styles, and signature devices — everything maps to existing tools. Call without a style to list the catalog. USE THIS before composing in a named genre: it turns vague style requests into concrete devices.",
+        description = "Composition recipes per style: a consistent rubric of scales, tuning presets, tempo, meters, rhythmic cells, techniques, drums, signature devices, song-section arc, mood, difficulty, an AVOID list, and numeric evaluation targets. Call without a style to list the catalog plus universal instrument roles. GENRE CROSSOVER: pass a blend like '60% death metal, 40% doom' (or 'djent + doom') to merge stylistic characteristics by weight - traits, never copied riffs. USE THIS before composing in a named genre.",
         annotations(title = "Style guide", read_only_hint = true)
     )]
     async fn tuxguitar_style_guide(
@@ -2064,6 +2120,24 @@ impl TabMcp {
     ) -> Result<String, ErrorData> {
         let Parameters(p) = params;
         match p.style.as_deref() {
+            Some(spec) if spec.contains('%') || spec.contains('+') || spec.contains(',') => {
+                tabmcp_theory::styles::parse_blend(spec)
+                    .map(|parts| tabmcp_theory::styles::describe_blend(&parts))
+                    .ok_or_else(|| {
+                        ErrorData::invalid_params(
+                            format!(
+                                "could not parse blend '{spec}'; expected e.g. \"60% death \
+                                 metal, 40% doom\" with known styles: {}",
+                                tabmcp_theory::styles::STYLES
+                                    .iter()
+                                    .map(|s| s.name)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            None,
+                        )
+                    })
+            }
             Some(name) => tabmcp_theory::styles::style_guide(name)
                 .map(tabmcp_theory::styles::describe)
                 .ok_or_else(|| {
@@ -2080,12 +2154,14 @@ impl TabMcp {
                     )
                 }),
             None => Ok(format!(
-                "Available styles (pass one for the full recipe):\n{}",
+                "Available styles (pass one for the full recipe, or a blend like \
+                 '60% death metal, 40% doom'):\n{}\n\n{}",
                 tabmcp_theory::styles::STYLES
                     .iter()
                     .map(|s| format!("  {} — {} BPM, {}", s.name, s.tempo, s.drums))
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join("\n"),
+                tabmcp_theory::styles::ROLES,
             )),
         }
     }
@@ -2225,6 +2301,670 @@ impl TabMcp {
             notes_before: Some(notes),
             notes_after: Some(result.notes_after),
         }))
+    }
+
+    #[tool(
+        description = "Rate how hard a passage is for a human player: 1-10 with itemized reasons (notes/sec, chord stretches, fast position shifts, string skips, 16th-run endurance, technique load). Defaults to the selection, falls back to track 1 whole song. Use it to keep parts playable — or to build practice material at a target level; pair with tuxguitar_optimize_fingering to bring a hard passage down.",
+        annotations(title = "Analyze difficulty", read_only_hint = true)
+    )]
+    async fn tuxguitar_analyze_difficulty(
+        &self,
+        params: Parameters<AnalysisScopeParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let (song, selection) = self
+            .call_bridge(|client| {
+                let song = client.read_song()?;
+                let selection = client.read_selection()?;
+                Ok((song, selection))
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let track_number = p
+            .track_number
+            .or(if selection.active {
+                selection.track_number
+            } else {
+                None
+            })
+            .unwrap_or(1);
+        let last_measure = song.headers.len() as u32;
+        let (from, to) = match (p.from_measure, p.to_measure) {
+            (Some(from), Some(to)) => (from, to),
+            (Some(from), None) => (from, from),
+            (None, _) if selection.active => (
+                selection.from_measure.unwrap_or(1),
+                selection.to_measure.unwrap_or(last_measure),
+            ),
+            _ => (1, last_measure.max(1)),
+        };
+        if from == 0 || to < from || to > last_measure || to - from + 1 > MAX_MEASURES_PER_READ {
+            return Err(ErrorData::invalid_params(
+                format!("invalid measure range {from}-{to} (score has 1-{last_measure}, max {MAX_MEASURES_PER_READ} per call)"),
+                None,
+            ));
+        }
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track_number} not found"), None)
+            })?;
+        let tuning: Vec<(u32, u8)> = track
+            .strings
+            .iter()
+            .map(|s| (s.number, s.open_pitch))
+            .collect();
+        let tempo = song
+            .headers
+            .iter()
+            .find(|h| h.number == from)
+            .map(|h| h.tempo_bpm)
+            .unwrap_or(120);
+        let range = self
+            .call_bridge(move |client| client.read_measures(track_number, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let report = tabmcp_theory::difficulty::analyze(&range.measures, &tuning, tempo);
+        Ok(tabmcp_theory::difficulty::describe(
+            &report,
+            &format!(
+                "Track {track_number} \"{}\", measures {from}-{to} at {tempo} BPM",
+                track.name
+            ),
+        ))
+    }
+
+    #[tool(
+        description = "RIFF EVOLUTION — hill-climb a riff through N generations: each generation tries every vary_riff mutation (displace, invert, octave, diminish, pedal, regroup, swap_dynamics), scores each candidate with the AI Ear fitness (groove + motif + dynamics + syncopation + breathing room), and keeps the best only if it improves. Returns the lineage ('gen 2: regroup — 61% -> 68%'). Deterministic. TWO-STEP: preview shows the lineage, confirm=true with expected_revision writes the winner. Undoable. For pitch-level evolution (new notes in the same DNA), use tuxguitar_riff_dna and write the material yourself.",
+        annotations(title = "Evolve riff", read_only_hint = false, destructive_hint = true)
+    )]
+    async fn tuxguitar_evolve_riff(
+        &self,
+        params: Parameters<EvolveRiffParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let track = p.track_number;
+        let (from, to) = (p.from_measure, p.to_measure);
+        if from == 0 || to < from || to - from + 1 > MAX_MEASURES_PER_READ {
+            return Err(ErrorData::invalid_params("invalid range", None));
+        }
+        let generations = p.generations.unwrap_or(4).clamp(1, 8);
+        let song = self.fetch_song().await?;
+        let tuning: Vec<(u32, u8)> = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track)
+            .map(|t| {
+                t.strings
+                    .iter()
+                    .map(|s| (s.number, s.open_pitch))
+                    .collect()
+            })
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track} not found"), None)
+            })?;
+        let range = self
+            .call_bridge(move |client| client.read_measures(track, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+
+        fn fitness(report: &tabmcp_theory::critique::CritiqueReport) -> f64 {
+            let window = |s: f64, lo: f64, hi: f64| {
+                if s >= lo && s <= hi {
+                    1.0
+                } else {
+                    let dist = if s < lo { lo - s } else { s - hi };
+                    (1.0 - dist * 4.0).max(0.0)
+                }
+            };
+            0.30 * report.groove_consistency
+                + 0.20 * (report.motif_repetition.min(0.5) / 0.5)
+                + 0.15 * (report.velocity_std / 12.0).min(1.0)
+                + 0.20 * window(report.syncopation, 0.15, 0.60)
+                + 0.15 * (report.rest_share / 0.25).min(1.0)
+        }
+
+        use tabmcp_theory::transforms;
+        let low_string = tuning
+            .iter()
+            .min_by_key(|&&(_, open)| open)
+            .map(|&(s, _)| s)
+            .unwrap_or(6);
+        type Mutation = (
+            &'static str,
+            Box<dyn Fn(&mut Vec<tabmcp_model::Measure>) + Send + Sync>,
+        );
+        let t1 = tuning.clone();
+        let t2 = tuning.clone();
+        let t3 = tuning.clone();
+        let mutations: Vec<Mutation> = vec![
+            ("displace 8th", Box::new(|m| transforms::displace(m, 480))),
+            ("displace 16th", Box::new(|m| transforms::displace(m, 240))),
+            ("invert", Box::new(move |m| transforms::invert(m, &t1))),
+            ("octave up", Box::new(move |m| transforms::octave_shift(m, &t2, 1))),
+            ("diminish", Box::new(|m| transforms::diminish(m))),
+            (
+                "pedal fill",
+                Box::new(move |m| {
+                    let _ = &t3;
+                    transforms::pedal_fill(m, low_string, 0, 240)
+                }),
+            ),
+            (
+                "regroup 3+3+2",
+                Box::new(|m| transforms::accent_group(m, &[3, 3, 2], 240)),
+            ),
+            ("swap dynamics", Box::new(|m| transforms::swap_dynamics(m))),
+        ];
+
+        let mut current = range.measures.clone();
+        let mut current_fit = fitness(&tabmcp_theory::critique::critique(&current, &tuning));
+        let seed_fit = current_fit;
+        let mut lineage: Vec<String> = Vec::new();
+        for generation in 1..=generations {
+            let mut best: Option<(&str, Vec<tabmcp_model::Measure>, f64)> = None;
+            for (label, mutate) in &mutations {
+                let mut candidate = current.clone();
+                mutate(&mut candidate);
+                let fit = fitness(&tabmcp_theory::critique::critique(&candidate, &tuning));
+                if best.as_ref().map(|(_, _, f)| fit > *f).unwrap_or(true) {
+                    best = Some((label, candidate, fit));
+                }
+            }
+            match best {
+                Some((label, candidate, fit)) if fit > current_fit + 0.005 => {
+                    lineage.push(format!(
+                        "gen {generation}: {label} — fitness {:.0}% -> {:.0}%",
+                        current_fit * 100.0,
+                        fit * 100.0
+                    ));
+                    current = candidate;
+                    current_fit = fit;
+                }
+                _ => {
+                    lineage.push(format!(
+                        "gen {generation}: no mutation improves — evolution stable at {:.0}%",
+                        current_fit * 100.0
+                    ));
+                    break;
+                }
+            }
+        }
+
+        let dest = p.dest_measure.unwrap_or(from);
+        for (i, measure) in current.iter_mut().enumerate() {
+            measure.number = dest + i as u32;
+        }
+        let notes = count_notes(&current);
+        let lineage_text = lineage.join("; ");
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY - nothing changed. Evolution of track {track} measures \
+                     {from}-{to}: {lineage_text}. Final fitness {:.0}% (seed was {:.0}%). \
+                     Would write {notes} notes at measure {dest}. To apply, call again with \
+                     confirm=true and expected_revision={}.",
+                    current_fit * 100.0,
+                    seed_fit * 100.0,
+                    range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: Some(notes),
+                notes_after: Some(notes),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track, dest, &current, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied evolution to track {track}: {lineage_text}. Final fitness {:.0}%. \
+                 Written at measure {dest}. The user can undo with Cmd+Z.",
+                current_fit * 100.0,
+            ),
+            revision: result.new_revision,
+            measures_added: Some(result.measures_added),
+            notes_before: Some(notes),
+            notes_after: Some(result.notes_after),
+        }))
+    }
+
+    #[tool(
+        description = "THEME TRACKER (musical memory) — map how motifs travel through the song: which section introduces motif A, which sections restate, vary, invert, retrograde, fragment or extend it, and where call-and-response phrasing happens (paired measures with the same rhythm and answering contour). Flags a song that forgets its own material. Sections come from markers and meter changes. Classical development devices, automated.",
+        annotations(title = "Track themes", read_only_hint = true)
+    )]
+    async fn tuxguitar_track_themes(
+        &self,
+        params: Parameters<AnalysisScopeParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let song = self.fetch_song().await?;
+        let last = song.headers.len() as u32;
+        if last == 0 {
+            return Err(ErrorData::invalid_params("empty score", None));
+        }
+        let track_number = p.track_number.unwrap_or(1);
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track_number} not found"), None)
+            })?;
+        let tuning: Vec<(u32, u8)> = track
+            .strings
+            .iter()
+            .map(|s| (s.number, s.open_pitch))
+            .collect();
+        let (from, to) = (p.from_measure.unwrap_or(1), p.to_measure.unwrap_or(last));
+        let measures = self.read_measures_chunked(track_number, from, to).await?;
+        let boundaries = Self::section_boundaries(&song, from, to);
+        let mut sections: Vec<(String, u32, u32, Vec<tabmcp_model::Measure>)> = Vec::new();
+        for (i, (start, label)) in boundaries.iter().enumerate() {
+            let end = boundaries.get(i + 1).map(|(m, _)| m - 1).unwrap_or(to);
+            let slice: Vec<tabmcp_model::Measure> = measures
+                .iter()
+                .filter(|m| m.number >= *start && m.number <= end)
+                .cloned()
+                .collect();
+            sections.push((label.clone(), *start, end, slice));
+        }
+        let report = tabmcp_theory::themes::analyze_themes(&sections, &tuning);
+        Ok(format!(
+            "Track {track_number} \"{}\":\n{}",
+            track.name,
+            tabmcp_theory::themes::describe(&report)
+        ))
+    }
+
+    #[tool(
+        description = "GUITAR REALISM CHECK — catch what a human hand cannot do before a player tries: impossible chord stretches (>6 frets), the same string sounded twice in one beat, frets past the neck, string-breaking bends (>4 semitones), stiff bends on wound low strings, and open strings ringing inside high positions. Checks every non-percussion track in the range (or one track if specified). Fix 'impossible' items; judge 'awkward' ones.",
+        annotations(title = "Check realism", read_only_hint = true)
+    )]
+    async fn tuxguitar_check_realism(
+        &self,
+        params: Parameters<AnalysisScopeParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let song = self.fetch_song().await?;
+        let last = song.headers.len() as u32;
+        let (from, to) = (p.from_measure.unwrap_or(1), p.to_measure.unwrap_or(last));
+        let mut out = String::new();
+        for track in &song.tracks {
+            if track.is_percussion {
+                continue;
+            }
+            if let Some(wanted) = p.track_number {
+                if track.number != wanted {
+                    continue;
+                }
+            }
+            let measures = self.read_measures_chunked(track.number, from, to).await?;
+            let report = tabmcp_theory::realism::check(&measures, track.max_fret.max(19));
+            out.push_str(&tabmcp_theory::realism::describe(
+                &report,
+                &format!("Track {} \"{}\"", track.number, track.name),
+            ));
+        }
+        if out.is_empty() {
+            out = "No melodic tracks to check.".into();
+        }
+        Ok(out)
+    }
+
+    #[tool(
+        description = "STYLE MATCH — 'what makes this sound like death metal?': measure the score's characteristics (tempo, syncopation, detected scale, technique mix) against every style rubric and rank the closest matches with per-criterion reasons. Extracts stylistic characteristics, never band riffs. Use it to verify a target style landed, or to discover what a piece actually is.",
+        annotations(title = "Style match", read_only_hint = true)
+    )]
+    async fn tuxguitar_style_match(
+        &self,
+        params: Parameters<AnalysisScopeParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let song = self.fetch_song().await?;
+        let last = song.headers.len() as u32;
+        let (from, to) = (p.from_measure.unwrap_or(1), p.to_measure.unwrap_or(last));
+        let tempo = song
+            .headers
+            .iter()
+            .find(|h| h.number == from)
+            .map(|h| h.tempo_bpm)
+            .unwrap_or(120);
+        let mut syncopations = Vec::new();
+        let mut palm_mute_share = 0.0f64;
+        let mut all_events: Vec<NoteEvent> = Vec::new();
+        let mut note_total = 0usize;
+        let mut muted_total = 0usize;
+        for track in &song.tracks {
+            if track.is_percussion {
+                continue;
+            }
+            let tuning: Vec<(u32, u8)> = track
+                .strings
+                .iter()
+                .map(|s| (s.number, s.open_pitch))
+                .collect();
+            let open: std::collections::HashMap<u32, u8> = tuning.iter().copied().collect();
+            let measures = self.read_measures_chunked(track.number, from, to).await?;
+            for measure in &measures {
+                for beat in &measure.beats {
+                    for voice in &beat.voices {
+                        for note in &voice.notes {
+                            if note.tied {
+                                continue;
+                            }
+                            note_total += 1;
+                            if note.effects.palm_mute {
+                                muted_total += 1;
+                            }
+                            if let Some(&o) = open.get(&note.string) {
+                                all_events.push(NoteEvent {
+                                    pitch: o.saturating_add(note.fret as u8),
+                                    weight: 480,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            let report = tabmcp_theory::critique::critique(&measures, &tuning);
+            if report.velocity_mean > 0.0 {
+                syncopations.push(report.syncopation);
+            }
+        }
+        if note_total > 0 {
+            palm_mute_share = muted_total as f64 / note_total as f64;
+        }
+        let syncopation = if syncopations.is_empty() {
+            0.0
+        } else {
+            syncopations.iter().sum::<f64>() / syncopations.len() as f64
+        };
+        let detected = detect_scales(&all_events);
+        let scale_name = detected
+            .first()
+            .map(|s| s.scale.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        let mut ranked: Vec<(f64, String)> = tabmcp_theory::styles::STYLES
+            .iter()
+            .map(|g| {
+                let tempo_ok =
+                    tempo >= g.tempo_range.0 as u32 && tempo <= g.tempo_range.1 as u32;
+                let sync_ok = syncopation >= g.syncopation.0 && syncopation <= g.syncopation.1;
+                let scale_ok = !scale_name.is_empty()
+                    && g.scales.to_ascii_lowercase().contains(&scale_name);
+                let technique_hint = g.techniques.to_ascii_lowercase();
+                let mute_ok = if technique_hint.contains("palmmute")
+                    || technique_hint.contains("chug")
+                {
+                    palm_mute_share > 0.15
+                } else {
+                    palm_mute_share < 0.5
+                };
+                let score = 0.30 * tempo_ok as u8 as f64
+                    + 0.25 * sync_ok as u8 as f64
+                    + 0.30 * scale_ok as u8 as f64
+                    + 0.15 * mute_ok as u8 as f64;
+                let detail = format!(
+                    "{:>3.0}% {} - tempo {tempo} {} {}-{}; syncopation {:.0}% {} {:.0}-{:.0}%; \
+                     scale {} {}; palm-mute {:.0}% {}",
+                    score * 100.0,
+                    g.name,
+                    if tempo_ok { "fits" } else { "outside" },
+                    g.tempo_range.0,
+                    g.tempo_range.1,
+                    syncopation * 100.0,
+                    if sync_ok { "fits" } else { "outside" },
+                    g.syncopation.0 * 100.0,
+                    g.syncopation.1 * 100.0,
+                    if scale_name.is_empty() { "unknown" } else { &scale_name },
+                    if scale_ok { "matches" } else { "does not match" },
+                    palm_mute_share * 100.0,
+                    if mute_ok { "consistent" } else { "inconsistent" },
+                );
+                (score, detail)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let top: Vec<String> = ranked.into_iter().take(3).map(|(_, d)| d).collect();
+        Ok(format!(
+            "STYLE MATCH (characteristics, not copied riffs), measures {from}-{to}:\n{}\n\
+             These are measured traits - interval choices, rhythm, density. To lean \
+             into a style, pull its recipe with tuxguitar_style_guide.",
+            top.join("\n")
+        ))
+    }
+
+    #[tool(
+        description = "PRODUCER MODE — arrangement-level suggestions instead of note edits: where to double a riff, drop instruments out, harmonize, hand a section to the bass, or set up a unison. Data-driven from section densities, dynamics, and structure; every suggestion names the tool that executes it. Run it when the notes are right but the song feels flat.",
+        annotations(title = "Producer notes", read_only_hint = true)
+    )]
+    async fn tuxguitar_producer_notes(
+        &self,
+        params: Parameters<AnalysisScopeParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let song = self.fetch_song().await?;
+        let last = song.headers.len() as u32;
+        let (from, to) = (p.from_measure.unwrap_or(1), p.to_measure.unwrap_or(last));
+        let boundaries = Self::section_boundaries(&song, from, to);
+
+        struct TrackData {
+            number: u32,
+            name: String,
+            is_percussion: bool,
+            mean_pitch: f64,
+            measures: Vec<tabmcp_model::Measure>,
+        }
+        let mut tracks: Vec<TrackData> = Vec::new();
+        for track in &song.tracks {
+            let open: std::collections::HashMap<u32, u8> = track
+                .strings
+                .iter()
+                .map(|s| (s.number, s.open_pitch))
+                .collect();
+            let measures = self.read_measures_chunked(track.number, from, to).await?;
+            let mut pitch_sum = 0f64;
+            let mut count = 0usize;
+            for measure in &measures {
+                for beat in &measure.beats {
+                    for voice in &beat.voices {
+                        for note in &voice.notes {
+                            if let Some(&o) = open.get(&note.string) {
+                                pitch_sum += (o as u32 + note.fret) as f64;
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            tracks.push(TrackData {
+                number: track.number,
+                name: track.name.clone(),
+                is_percussion: track.is_percussion,
+                mean_pitch: if count == 0 { 0.0 } else { pitch_sum / count as f64 },
+                measures,
+            });
+        }
+
+        // Per-section energy: note count weighted by velocity.
+        let section_ranges: Vec<(String, u32, u32)> = boundaries
+            .iter()
+            .enumerate()
+            .map(|(i, (start, label))| {
+                let end = boundaries.get(i + 1).map(|(m, _)| m - 1).unwrap_or(to);
+                (label.clone(), *start, end)
+            })
+            .collect();
+        let energy_of = |track: &TrackData, lo: u32, hi: u32| -> f64 {
+            track
+                .measures
+                .iter()
+                .filter(|m| m.number >= lo && m.number <= hi)
+                .flat_map(|m| &m.beats)
+                .flat_map(|b| &b.voices)
+                .flat_map(|v| &v.notes)
+                .map(|n| n.velocity as f64 / 127.0)
+                .sum()
+        };
+        let mut notes: Vec<String> = Vec::new();
+
+        let melodic: Vec<&TrackData> = tracks.iter().filter(|t| !t.is_percussion).collect();
+        let guitars: Vec<&&TrackData> = melodic
+            .iter()
+            .filter(|t| t.mean_pitch >= 45.0) // above bass territory
+            .collect();
+        if guitars.len() == 1 {
+            notes.push(format!(
+                "Double the guitar: create a second track (tuxguitar_create_track) and \
+                 copy_measures track {}'s riff onto it - width for free; pan hard \
+                 left/right later in the DAW.",
+                guitars[0].number
+            ));
+        }
+        if let Some(peak) = section_ranges
+            .iter()
+            .max_by(|a, b| {
+                let ea: f64 = tracks.iter().map(|t| energy_of(t, a.1, a.2)).sum();
+                let eb: f64 = tracks.iter().map(|t| energy_of(t, b.1, b.2)).sum();
+                ea.total_cmp(&eb)
+            })
+            .filter(|_| section_ranges.len() > 1)
+        {
+            if let Some(before) = section_ranges
+                .iter()
+                .find(|(_, _, end)| *end + 1 == peak.1)
+            {
+                notes.push(format!(
+                    "Set up the climax: \"{}\" is the peak - strip the last 1-2 bars of \
+                     \"{}\" (m{}) to bass and drums (delete or thin the guitar there) so \
+                     the drop into m{} hits harder.",
+                    peak.0, before.0, before.2, peak.1
+                ));
+            }
+            if guitars.len() >= 1 {
+                let lead = guitars
+                    .iter()
+                    .max_by(|a, b| a.mean_pitch.total_cmp(&b.mean_pitch))
+                    .unwrap();
+                notes.push(format!(
+                    "Lift \"{}\": harmonize track {} \"{}\" in 3rds there \
+                     (tuxguitar_generate_harmony, measures {}-{}) - instant dual-guitar \
+                     chorus.",
+                    peak.0, lead.number, lead.name, peak.1, peak.2
+                ));
+            }
+        }
+        let every_section_full = section_ranges.iter().all(|(_, lo, hi)| {
+            melodic.iter().all(|t| energy_of(t, *lo, *hi) > 0.0)
+        });
+        if every_section_full && section_ranges.len() >= 3 {
+            notes.push(
+                "Every instrument plays in every section - give one section a reduced \
+                 arrangement (bass carries, or drums+vocal-space only). Silence is an \
+                 arrangement tool."
+                    .to_string(),
+            );
+        }
+        if let Some((label, lo, hi)) = section_ranges
+            .iter()
+            .find(|(label, _, _)| label.to_ascii_lowercase().contains("breakdown"))
+        {
+            notes.push(format!(
+                "\"{}\" (m{}-{}): verify guitar/kick unison with tuxguitar_evaluate - \
+                 breakdown weight comes from rhythmic alignment, not volume.",
+                label, lo, hi
+            ));
+        }
+        if notes.is_empty() {
+            notes.push(
+                "Arrangement reads balanced - nothing structural to flag. If it still \
+                 feels flat, the problem is inside the riffs: run tuxguitar_hook_check."
+                    .to_string(),
+            );
+        }
+        let numbered: Vec<String> = notes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| format!("{}. {}", i + 1, n))
+            .collect();
+        Ok(format!(
+            "PRODUCER NOTES, measures {from}-{to} ({} sections):\n{}",
+            section_ranges.len(),
+            numbered.join("\n")
+        ))
+    }
+
+    #[tool(
+        description = "HOOK CHECK — the memorability gate: one critic whose only job is to reject riffs. Six criteria: a rememberable motif, a hummable contour, rhythmic identity, live dynamics, breathing room, and a surprise or developed repeat. Four of six passes; otherwise REJECTED with the reasons. Ask it: would anyone remember this tomorrow? If rejected, change one thing and re-run.",
+        annotations(title = "Hook check", read_only_hint = true)
+    )]
+    async fn tuxguitar_hook_check(
+        &self,
+        params: Parameters<RiffDnaParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let track_number = p.track_number;
+        let (from, to) = (p.from_measure, p.to_measure);
+        if from == 0 || to < from || to - from + 1 > MAX_MEASURES_PER_READ {
+            return Err(ErrorData::invalid_params("invalid range", None));
+        }
+        let song = self.fetch_song().await?;
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track_number} not found"), None)
+            })?;
+        let tuning: Vec<(u32, u8)> = track
+            .strings
+            .iter()
+            .map(|s| (s.number, s.open_pitch))
+            .collect();
+        let range = self
+            .call_bridge(move |client| client.read_measures(track_number, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let report = tabmcp_theory::critique::critique(&range.measures, &tuning);
+        let verdict = tabmcp_theory::critique::hook_check(&report);
+        let mut out = format!(
+            "HOOK CHECK - track {track_number} \"{}\", measures {from}-{to}: {}\n",
+            track.name,
+            if verdict.pass {
+                "PASS - this could stick"
+            } else {
+                "REJECTED - would anyone remember this tomorrow?"
+            }
+        );
+        for s in &verdict.strengths {
+            out.push_str(&format!("  + {s}\n"));
+        }
+        for r in &verdict.rejections {
+            out.push_str(&format!("  - {r}\n"));
+        }
+        if !verdict.pass {
+            out.push_str(
+                "Change ONE thing (vary a repeat, carve a rest, shape the contour) and \
+                 re-run. Repeat until PASS.\n",
+            );
+        }
+        Ok(out)
     }
 
     #[tool(
@@ -2426,8 +3166,29 @@ impl TabMcp {
             }
         }
 
+        // Emotion journey resolves to a tension target with labels.
+        let emotion = match &p.emotion_target {
+            Some(spec) => Some(
+                tabmcp_theory::emotion::curve(spec)
+                    .map_err(|e| ErrorData::invalid_params(e, None))?,
+            ),
+            None => None,
+        };
+
         // Tension target: compare the mean measured curve to the desired arc.
-        if let Some(target_spec) = &p.tension_target {
+        let tension_spec = p
+            .tension_target
+            .clone()
+            .or_else(|| {
+                emotion.as_ref().map(|(values, _)| {
+                    values
+                        .iter()
+                        .map(|v| format!("{v:.2}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+            });
+        if let Some(target_spec) = &tension_spec {
             let target: Vec<f64> = target_spec
                 .split(',')
                 .map(|s| s.trim().parse::<f64>())
@@ -2458,12 +3219,23 @@ impl TabMcp {
                         worst = (i, measured, wanted);
                     }
                 }
+                let wanted_label = emotion
+                    .as_ref()
+                    .and_then(|(_, labels)| labels.get((worst.0 * target.len()) / n))
+                    .map(|l| format!(" (should feel \"{l}\")"))
+                    .unwrap_or_default();
+                let header = if emotion.is_some() {
+                    "EMOTION JOURNEY"
+                } else {
+                    "TENSION TARGET"
+                };
                 out.push_str(&format!(
-                    "\nTENSION TARGET: mean deviation {:.0}%; largest gap at measure {} \
+                    "\n{header}: mean deviation {:.0}%; largest gap at measure {}{} \
                      (wanted {:.1}, measured {:.1}). Raise tension with density/velocity/\
                      register/dissonance, lower it with space.\n",
                     total_gap / n as f64 * 100.0,
                     from + worst.0 as u32,
+                    wanted_label,
                     worst.2,
                     worst.1
                 ));
@@ -3439,6 +4211,53 @@ impl TabMcp {
         self.call_bridge(|client| client.read_song())
             .await
             .map_err(BridgeCallError::into_error_data)
+    }
+
+    /// Read an arbitrary measure range by chunking bridge reads at the
+    /// per-call limit.
+    async fn read_measures_chunked(
+        &self,
+        track_number: u32,
+        from: u32,
+        to: u32,
+    ) -> Result<Vec<tabmcp_model::Measure>, ErrorData> {
+        let mut out = Vec::new();
+        let mut cursor = from;
+        while cursor <= to {
+            let end = (cursor + MAX_MEASURES_PER_READ - 1).min(to);
+            let range = self
+                .call_bridge(move |client| client.read_measures(track_number, cursor, end))
+                .await
+                .map_err(BridgeCallError::into_error_data)?;
+            out.extend(range.measures);
+            cursor = end + 1;
+        }
+        Ok(out)
+    }
+
+    /// Song sections between `from..=to`: split at markers and time-signature
+    /// changes; always starts at `from`. Returns (start_measure, label).
+    fn section_boundaries(song: &Song, from: u32, to: u32) -> Vec<(u32, String)> {
+        let mut boundaries: Vec<(u32, String)> = Vec::new();
+        for (i, header) in song.headers.iter().enumerate() {
+            let meter_changed =
+                i > 0 && song.headers[i - 1].time_signature != header.time_signature;
+            if header.number >= from
+                && header.number <= to
+                && (header.marker.is_some() || meter_changed || header.number == from)
+            {
+                let label = header.marker.clone().unwrap_or_else(|| {
+                    format!(
+                        "{}/{}",
+                        header.time_signature.numerator, header.time_signature.denominator
+                    )
+                });
+                if boundaries.last().map(|(m, _)| *m) != Some(header.number) {
+                    boundaries.push((header.number, label));
+                }
+            }
+        }
+        boundaries
     }
 
     /// Resolve the analysis scope (explicit args > selection > whole track 1)

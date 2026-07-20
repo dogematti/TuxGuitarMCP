@@ -4,10 +4,14 @@
 pub mod analysis;
 pub mod arrangement;
 pub mod critique;
+pub mod difficulty;
+pub mod emotion;
 pub mod fingering;
 pub mod generation;
 pub mod pitch;
+pub mod realism;
 pub mod styles;
+pub mod themes;
 pub mod transforms;
 
 pub use analysis::{

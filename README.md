@@ -24,11 +24,12 @@ the AI iterates —
 
 1. **Compose** a riff / arrangement (or read what the user wrote)
 2. **Evaluate** — `tuxguitar_evaluate` scores every track: groove
-   consistency, motif repetition (with the recurring interval pattern),
-   note density, robotic-dynamics detection, cross-track dissonance
-   clashes, register masking, rhythmic tightness, key/scale
+   consistency, syncopation, motif development (literal vs varied repeats),
+   per-measure tension curve, harmonic rhythm, rest share, robotic-dynamics
+   and boredom detection, cross-track clashes, key/scale, a human-feel
+   check for AI artifacts, and the pass-over-pass trend
 3. **Listen** — `tuxguitar_render_and_listen` renders the real mix through
-   TuxGuitar's own soundfont (headless MIDI → fluidsynth → WAV → DSP:
+   TuxGuitar's own soundfont (headless MIDI -> fluidsynth -> WAV -> DSP:
    loudness, clipping, spectral balance, quiet holes);
    `tuxguitar_listen_stems` renders **each track in isolation** to hear
    which instrument causes a problem
@@ -37,13 +38,27 @@ the AI iterates —
 5. **Repeat**, narrating each pass — the undo stack is the version history
    (one Cmd+Z per pass)
 
-## Tool surface (41 tools + 2 prompts)
+Around the loop sit the composition instruments: **Riff DNA** (extract a
+riff's identity and evolve it instead of copying), **riff evolution**
+(hill-climb a riff through mutation generations scored by the AI Ear),
+**theme tracking** (musical memory across sections: restated, varied,
+inverted, fragmented motifs; call-and-response detection), the **hook
+check** (a critic whose only job is to reject forgettable riffs), the
+**realism check** (impossible stretches, string-breaking bends), the
+**difficulty analyzer** (1-10 with reasons, fatigue and picking
+simulation), **producer notes** (arrangement-level suggestions), **style
+matching** ("what makes this sound like death metal?"), genre **blends**
+("60% death metal, 40% doom"), and **emotion targets** ("calm, uneasy,
+aggressive, victorious" checked against the measured tension curve).
+
+## Tool surface (48 tools + 3 prompts)
 
 | Area | Tools |
 |---|---|
 | Status & reading | `get_bridge_status`, `get_score_summary`, `get_measures`, `get_selection` |
-| Analysis | `evaluate` (AI Ear scorecard: groove, syncopation, motif development, tension curve, harmonic rhythm, human-feel artifact check, pass-over-pass trend; optional per-style targets and tension-target arcs), `riff_dna` (extract a riff's musical identity — motif, rhythm cell, scale, techniques, energy — to evolve it without copying), `analyze_arrangement`, `detect_key_and_scale` (44-scale catalog incl. phrygian dominant, hirajoshi, ...), `detect_chords`, `explain_selection`, `style_guide` (16-genre rubrics: scales, tuning, meters, sections, mood, difficulty, avoid-list, evaluation targets) |
-| Audio ear | `render_and_listen` (full mix + per-measure levels), `listen_stems` (per track, with auto-prescriptions) |
+| AI Ear | `evaluate` (full scorecard; optional `style` targets, `tension_target` arcs, `emotion_target` journeys), `render_and_listen` (full mix + per-measure levels), `listen_stems` (per track, with auto-prescriptions) |
+| Composition intelligence | `riff_dna` (motif / rhythm cell / scale / techniques / energy identity), `evolve_riff` (N-generation mutation hill-climb, AI Ear fitness), `track_themes` (motif memory across sections + call-and-response), `hook_check` (memorability gate: pass or rejected with reasons), `check_realism` (impossible or awkward guitar writing), `analyze_difficulty` (1-10 with reasons, fatigue model, picking simulation), `producer_notes` (arrangement suggestions), `style_match` (which styles the music actually resembles) |
+| Analysis | `analyze_arrangement`, `detect_key_and_scale` (44-scale catalog incl. phrygian dominant, hirajoshi, ...), `detect_chords`, `explain_selection`, `style_guide` (16-genre rubrics: scales, tuning, meters, sections, mood, difficulty, avoid-list, evaluation targets, instrument roles; blend syntax for genre crossover) |
 | Writing | `replace_measures` (chords, tuplets, two voices, pinch harmonics, bend curves), `transpose`, `humanize`, `copy_measures`, `vary_riff` (9 transforms: displace, retrograde, invert, octave, augment, diminish, pedal-tone fill, polymetric regroup, dynamics swap), `import_midi` (MIDI -> optimized tab) |
 | Fingering | `optimize_fingering` — chord-aware DP with explanations, fret-range constraints, cost presets (`metal`) |
 | Generation | `generate_bassline` (root-anchor detection, soundfont-safe register), `generate_harmony` (3rds/6ths, any catalog scale), `generate_drums` (styles: rock, metal-gallop, punk, halftime, blast, d-beat; meter-aware; `target_track` for per-section grooves) |
@@ -53,7 +68,10 @@ the AI iterates —
 | History | `undo`, `redo` |
 
 **MCP prompts** (one-click workflows): `compose` (style/key/bars -> full
-compose-and-refine session) and `refine` (N AI-Ear passes on the open score).
+compose-and-refine session), `refine` (N AI-Ear passes on the open score),
+and `band` (five personalities — composer, critic, producer, guitarist,
+listener — each review with their own tools, vote, and the winning fixes
+get applied).
 
 (All tool names carry the `tuxguitar_` prefix.)
 
@@ -98,7 +116,7 @@ codex mcp add tuxguitar -- ~/.cargo/bin/tabmcp serve
 ```
 (lands in `~/.codex/config.toml`; check with `codex mcp list`)
 
-**Google Antigravity** (Gemini): in the IDE open **Manage MCP Servers →
+**Google Antigravity** (Gemini): in the IDE open **Manage MCP Servers ->
 Open MCP Config** (the agent panel's `...` menu) and add:
 ```json
 {
@@ -107,7 +125,7 @@ Open MCP Config** (the agent panel's `...` menu) and add:
   }
 }
 ```
-then hit **Refresh** — "tuxguitar, 41 tools enabled" should appear. The
+then hit **Refresh** — "tuxguitar, 48 tools enabled" should appear. The
 `agy` CLI reads the same shape from `~/.gemini/config/mcp_config.json`.
 
 **xAI Grok CLI**: add the same `mcpServers` JSON block to Grok's MCP

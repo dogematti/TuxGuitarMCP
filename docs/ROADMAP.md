@@ -2,7 +2,7 @@
 
 ## Prioritized plan (2026-07-20, after the AI-Ear field tests)
 
-### P1 — Correctness under hard music ✅ SHIPPED (meter-aware generators, set_time_signature, set_key_signature, insert/delete_measures)
+### P1 — Correctness under hard music [SHIPPED] (meter-aware generators, set_time_signature, set_key_signature, insert/delete_measures)
 - **Meter awareness**: everything rhythm-side silently assumes 4/4 — drum
   templates place hits on a fixed 8-eighth grid (a 3/4 or 7/8 measure would
   reject or misplace hits), the bass fifth-walk window is hardcoded to
@@ -16,7 +16,7 @@
   exist in TuxGuitar (undo-wired actions verified); only bridge+tool
   plumbing is missing.
 
-### P2 — Song-form workflow ✅ SHIPPED (copy_measures, MCP prompts compose/refine, golden wire fixture)
+### P2 — Song-form workflow [SHIPPED] (copy_measures, MCP prompts compose/refine, golden wire fixture)
 - **copy_measures**: duplicate a range to another location/track — song
   forms (verse x2, chorus) currently force the client to resend content.
 - **MCP prompts**: ship 'compose-song', 'refine' (AI-Ear loop), 'practice'
@@ -43,7 +43,7 @@
 - Confirmed fixed in the field: bass soundfont-floor bug (stems audible,
   mid-forward); 44-scale catalog (A phrygian dominant detected as top pick).
 
-### P2.5 — Import pipeline — Stage 1 (import_midi) ✅ SHIPPED; Stage 2 (audio front-end) open
+### P2.5 — Import pipeline — Stage 1 (import_midi) [SHIPPED]; Stage 2 (audio front-end) open
 - **Stage 1: import_midi** — parse a .mid from the fixed scratch path
   (midly is already a dependency), beat-quantize onto the tick grid,
   string/fret via the fingering optimizer, preview/confirm into a new
@@ -122,7 +122,7 @@ can write expressive tablature, not just note grids.
 - `generate_harmony_track`: diatonic 3rds/6ths harmony of a monophonic lead,
   written to a new track (uses the fingering optimizer for playability).
 - `generate_drum_part`: kick/snare mapped to the guitar accents (percussion
-  channel), basic rock/metal templates. ✅ shipped as tuxguitar_generate_drums
+  channel), basic rock/metal templates. [shipped] as tuxguitar_generate_drums
 - All generation lands behind the existing preview -> confirm -> undo flow.
 
 ## Phase 9 — Fingering, deeper

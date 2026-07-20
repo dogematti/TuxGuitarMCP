@@ -70,6 +70,75 @@ pub struct CritiqueReport {
     /// Root changes per measure boundary, 0..1 (0 = one pedal root
     /// throughout, 1 = new bass root every measure).
     pub harmonic_rhythm: f64,
+    /// 0..1 share of the range that is silence (no note sounding). AI
+    /// material tends toward 0 — real riffs breathe.
+    pub rest_share: f64,
+    /// Measure indices (0-based within the range) where an established
+    /// rhythm pattern (2+ identical measures) breaks — surprise events.
+    pub surprise_breaks: Vec<usize>,
+    /// Share of melodic motion that is stepwise (2 semitones or less) —
+    /// high = singable, low = leapy.
+    pub stepwise_share: f64,
+    /// Total pitch span in semitones (max - min).
+    pub pitch_span: u8,
+}
+
+/// Verdict of the "could this become a classic riff?" gate.
+pub struct HookVerdict {
+    pub pass: bool,
+    /// Criteria met, as short statements.
+    pub strengths: Vec<String>,
+    /// Criteria failed — the rejection reasons.
+    pub rejections: Vec<String>,
+}
+
+/// The memorability gate: one critic whose only job is to reject riffs.
+/// Passes when at least 4 of 6 hook criteria hold.
+pub fn hook_check(report: &CritiqueReport) -> HookVerdict {
+    let mut strengths = Vec::new();
+    let mut rejections = Vec::new();
+    let mut check = |ok: bool, strength: &str, rejection: &str| {
+        if ok {
+            strengths.push(strength.to_string());
+        } else {
+            rejections.push(rejection.to_string());
+        }
+    };
+    check(
+        !report.top_motif.is_empty() && (0.25..=0.75).contains(&report.motif_repetition),
+        "a motif recurs enough to remember",
+        "no recurring motif to remember tomorrow (or it repeats so much it numbs)",
+    );
+    check(
+        report.pitch_span <= 19 && report.stepwise_share >= 0.35,
+        "hummable contour (compact range, mostly stepwise)",
+        "contour is not singable - too wide a range or all leaps",
+    );
+    check(
+        report.groove_consistency > 0.7 && report.syncopation > 0.05,
+        "distinct rhythmic identity",
+        "no rhythmic identity - either erratic or a flat metronome",
+    );
+    check(
+        report.velocity_std >= 2.0,
+        "dynamics are alive",
+        "flat dynamics - nothing breathes louder or softer",
+    );
+    check(
+        report.rest_share >= 0.03,
+        "the riff breathes",
+        "wall of notes - no silence to frame the phrase",
+    );
+    check(
+        !report.surprise_breaks.is_empty() || report.varied_repeats >= 1,
+        "contains a surprise or a developed repeat",
+        "fully predictable - no pattern break, no varied repeat",
+    );
+    HookVerdict {
+        pass: strengths.len() >= 4,
+        strengths,
+        rejections,
+    }
 }
 
 /// Evaluate one track's material.
@@ -233,6 +302,38 @@ pub fn critique(measures: &[Measure], tuning: Tuning) -> CritiqueReport {
         }
     }
 
+    // Surprise meter: a break after 2+ measures of the same rhythm pattern
+    // is a surprise event; none across a long range means predictability.
+    let mut surprise_breaks: Vec<usize> = Vec::new();
+    let mut streak = 1usize;
+    for i in 1..signatures.len() {
+        match (&signatures[i - 1], &signatures[i]) {
+            (Some(prev), Some(cur)) => {
+                if cur.rhythm == prev.rhythm {
+                    streak += 1;
+                } else {
+                    if streak >= 2 {
+                        surprise_breaks.push(i);
+                    }
+                    streak = 1;
+                }
+            }
+            _ => streak = 1,
+        }
+    }
+
+    // Contour: singability statistics.
+    let stepwise_share = if intervals.is_empty() {
+        0.0
+    } else {
+        intervals.iter().filter(|i| i.abs() <= 2).count() as f64 / intervals.len() as f64
+    };
+    let pitch_span = {
+        let lo = events.iter().map(|e| e.pitch).min().unwrap_or(0);
+        let hi = events.iter().map(|e| e.pitch).max().unwrap_or(0);
+        hi - lo
+    };
+
     // Tension curve: per-measure composite of density, dynamics, register,
     // and dissonant melodic motion (semitones/tritones), normalized so the
     // range's own extremes define 0..1.
@@ -304,6 +405,68 @@ pub fn critique(measures: &[Measure], tuning: Tuning) -> CritiqueReport {
         roots.windows(2).filter(|p| p[0] != p[1]).count() as f64 / (roots.len() - 1) as f64
     };
 
+    // Rest share: how much of the range is actual silence. Approximate a
+    // beat's sounding span by its longest voice duration, capped at the gap
+    // to the next beat (and at the measure end).
+    let rest_share = {
+        fn duration_ticks(d: &tabmcp_model::Duration) -> u64 {
+            let base = 3840u64 / d.value.max(1) as u64;
+            let mut t = base;
+            if d.dotted {
+                t += base / 2;
+            }
+            if d.double_dotted {
+                t += base / 2 + base / 4;
+            }
+            if d.tuplet.enters > 0 && d.tuplet.times > 0 && d.tuplet.enters != d.tuplet.times {
+                t = t * d.tuplet.times as u64 / d.tuplet.enters as u64;
+            }
+            t
+        }
+        let mut total = 0u64;
+        let mut sounding = 0u64;
+        for (i, measure) in measures.iter().enumerate() {
+            let len = if i + 1 < measures.len() {
+                measures[i + 1]
+                    .start_tick
+                    .saturating_sub(measure.start_tick)
+            } else {
+                3840
+            }
+            .max(1);
+            total += len;
+            let end = measure.start_tick + len;
+            for (j, beat) in measure.beats.iter().enumerate() {
+                let has_notes = beat
+                    .voices
+                    .iter()
+                    .any(|v| !v.is_rest && !v.notes.is_empty());
+                if !has_notes {
+                    continue;
+                }
+                let span = beat
+                    .voices
+                    .iter()
+                    .filter(|v| !v.is_rest && !v.notes.is_empty())
+                    .map(|v| duration_ticks(&v.duration))
+                    .max()
+                    .unwrap_or(0);
+                let cap = measure
+                    .beats
+                    .get(j + 1)
+                    .map(|next| next.start_tick)
+                    .unwrap_or(end)
+                    .saturating_sub(beat.start_tick);
+                sounding += span.min(cap);
+            }
+        }
+        if total == 0 {
+            0.0
+        } else {
+            1.0 - (sounding.min(total) as f64 / total as f64)
+        }
+    };
+
     CritiqueReport {
         groove_consistency,
         density_range,
@@ -317,6 +480,10 @@ pub fn critique(measures: &[Measure], tuning: Tuning) -> CritiqueReport {
         fresh_measures,
         tension,
         harmonic_rhythm,
+        rest_share,
+        surprise_breaks,
+        stepwise_share,
+        pitch_span,
     }
 }
 
@@ -393,6 +560,48 @@ pub fn describe(report: &CritiqueReport, track_label: &str) -> String {
     }
     if report.velocity_std < 2.0 {
         out.push_str("  ISSUE: robotic dynamics — consider tuxguitar_humanize or accents\n");
+    }
+    if report.rest_share < 0.03 && report.density_range.1 >= 4 {
+        out.push_str(
+            "  ISSUE: no breathing room — zero rests in the range; silence is a riff \
+             tool (drop a hit before a downbeat, or end a phrase early)\n",
+        );
+    }
+    if report.tension.len() >= 8 {
+        if report.surprise_breaks.is_empty() && report.literal_repeats >= 2 {
+            out.push_str(
+                "  ISSUE: fully predictable — long stretch with zero pattern breaks; \
+                 plant one surprise (a bar of 2/4, a rest, a register jump)\n",
+            );
+        } else if report.surprise_breaks.len() > report.tension.len() / 3 {
+            out.push_str(
+                "  ISSUE: chaotic — the pattern breaks every few bars; let material \
+                 establish before you break it\n",
+            );
+        }
+    }
+    // Boredom risk: how many "am I getting bored?" signals fire at once.
+    let boredom_signals = [
+        report.literal_repeats >= 3 && report.varied_repeats == 0,
+        report.syncopation < 0.05,
+        report.velocity_std < 2.0,
+        report.rest_share < 0.03,
+        report.tension.len() >= 4 && {
+            let mean = report.tension.iter().sum::<f64>() / report.tension.len() as f64;
+            (report.tension.iter().map(|t| (t - mean).powi(2)).sum::<f64>()
+                / report.tension.len() as f64)
+                .sqrt()
+                < 0.08
+        },
+    ]
+    .iter()
+    .filter(|&&x| x)
+    .count();
+    if boredom_signals >= 3 {
+        out.push_str(&format!(
+            "  BOREDOM RISK {boredom_signals}/5: repetition without variation, constant \
+             feel, or no silence — surprise the listener somewhere\n"
+        ));
     }
     out
 }
@@ -538,6 +747,57 @@ mod tests {
         let report = critique(&measures, STANDARD);
         assert_eq!(report.literal_repeats, 2);
         assert!(describe(&report, "T1").contains("copy-paste"));
+    }
+
+    #[test]
+    fn pattern_break_registers_as_surprise() {
+        let base = [(6, 0, 95), (6, 3, 95), (6, 5, 95), (5, 2, 95)];
+        let broken = [(6, 0, 95), (5, 2, 95)]; // different rhythm signature
+        let measures = vec![
+            measure(1, &base),
+            measure(2, &base),
+            measure(3, &base),
+            measure(4, &broken),
+        ];
+        let report = critique(&measures, STANDARD);
+        assert_eq!(report.surprise_breaks, vec![3]);
+    }
+
+    #[test]
+    fn hook_gate_rejects_a_wall_and_passes_a_riff() {
+        // Wall: identical flat 8ths, no motif variation, no rests.
+        let wall = [(6, 0, 95); 8];
+        let wall_measures: Vec<Measure> = (1..=4).map(|n| measure(n, &wall)).collect();
+        let verdict = hook_check(&critique(&wall_measures, STANDARD));
+        assert!(!verdict.pass, "{:?}", verdict.strengths);
+        assert!(!verdict.rejections.is_empty());
+
+        // Riff: recurring figure, varied repeat, dynamics, space, surprise.
+        let a = [(6, 0, 110), (6, 3, 85), (6, 5, 95), (5, 2, 100)];
+        let varied = [(6, 2, 105), (6, 5, 88), (6, 7, 96), (5, 4, 92)];
+        let riff_measures = vec![
+            measure(1, &a),
+            measure(2, &a),
+            measure(3, &varied),
+            measure(4, &a),
+        ];
+        let verdict = hook_check(&critique(&riff_measures, STANDARD));
+        assert!(verdict.pass, "rejections: {:?}", verdict.rejections);
+    }
+
+    #[test]
+    fn wall_of_notes_flags_no_breathing_room() {
+        // 8 straight 8ths fill the whole bar: rest_share ~0.
+        let riff = [(6, 0, 95); 8];
+        let measures = vec![measure(1, &riff)];
+        let report = critique(&measures, STANDARD);
+        assert!(report.rest_share < 0.03, "{}", report.rest_share);
+        assert!(describe(&report, "T1").contains("breathing room"));
+        // Half-full bar breathes: no flag.
+        let sparse = vec![measure(1, &[(6, 0, 95), (6, 3, 95), (6, 5, 95), (5, 2, 95)])];
+        let sparse_report = critique(&sparse, STANDARD);
+        assert!(sparse_report.rest_share > 0.4, "{}", sparse_report.rest_share);
+        assert!(!describe(&sparse_report, "T1").contains("breathing room"));
     }
 
     #[test]
