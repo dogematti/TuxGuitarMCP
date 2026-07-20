@@ -52,6 +52,37 @@ const SCALES: &[(&str, &[u8])] = &[
     ("whole tone", &[0, 2, 4, 6, 8, 10]),
     ("altered", &[0, 1, 3, 4, 6, 8, 10]),
     ("lydian dominant", &[0, 2, 4, 6, 7, 9, 10]),
+    // Melodic-minor modes
+    ("dorian b2", &[0, 1, 3, 5, 7, 9, 10]),
+    ("lydian augmented", &[0, 2, 4, 6, 8, 9, 11]),
+    ("mixolydian b6", &[0, 2, 4, 5, 7, 8, 10]),
+    ("locrian natural 2", &[0, 2, 3, 5, 6, 8, 10]),
+    // Harmonic-minor modes
+    ("locrian natural 6", &[0, 1, 3, 5, 6, 9, 10]),
+    ("ionian #5", &[0, 2, 4, 5, 8, 9, 11]),
+    ("dorian #4", &[0, 2, 3, 6, 7, 9, 10]),
+    ("lydian #2", &[0, 3, 4, 6, 7, 9, 11]),
+    ("super locrian bb7", &[0, 1, 3, 4, 6, 8, 9]),
+    // Exotic & world
+    ("harmonic major", &[0, 2, 4, 5, 7, 8, 11]),
+    ("hungarian major", &[0, 3, 4, 6, 7, 9, 10]),
+    ("neapolitan minor", &[0, 1, 3, 5, 7, 8, 11]),
+    ("neapolitan major", &[0, 1, 3, 5, 7, 9, 11]),
+    ("persian", &[0, 1, 4, 5, 6, 8, 11]),
+    ("enigmatic", &[0, 1, 4, 6, 8, 10, 11]),
+    ("major blues", &[0, 2, 3, 4, 7, 9]),
+    // Japanese pentatonics
+    ("hirajoshi", &[0, 2, 3, 7, 8]),
+    ("in sen", &[0, 1, 5, 7, 10]),
+    ("iwato", &[0, 1, 5, 6, 10]),
+    ("yo", &[0, 2, 5, 7, 9]),
+    ("egyptian", &[0, 2, 5, 7, 10]),
+    // Jazz & symmetric
+    ("bebop dominant", &[0, 2, 4, 5, 7, 9, 10, 11]),
+    ("bebop major", &[0, 2, 4, 5, 7, 8, 9, 11]),
+    ("whole-half diminished", &[0, 2, 3, 5, 6, 8, 9, 11]),
+    ("augmented scale", &[0, 3, 4, 7, 8, 11]),
+    ("prometheus", &[0, 2, 4, 6, 9, 10]),
 ];
 
 /// Duration-weighted pitch-class histogram, normalized to sum 1.
@@ -169,6 +200,7 @@ const CHORD_TEMPLATES: &[(&str, &[u8])] = &[
     ("sus2", &[0, 2, 7]),
     ("sus4", &[0, 5, 7]),
     ("5", &[0, 7]),
+    ("dim7", &[0, 3, 6, 9]),
 ];
 
 /// Name a chord from its pitch classes (exact template match), e.g.
