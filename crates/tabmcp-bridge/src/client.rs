@@ -10,7 +10,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tabmcp_model::{
     ApplyResult, ClientInfo, DiscoveryInfo, HelloParams, HelloResult, Measure, MeasureRange,
-    PingResult, SaveCopyResult, Selection, Song, SpikeEditResult, UndoResult, PROTOCOL_VERSION,
+    PingResult, SaveCopyResult, Selection, Song, SpikeEditResult, StringTuning, UndoResult,
+    PROTOCOL_VERSION,
 };
 
 use crate::discovery::read_discovery;
@@ -139,6 +140,39 @@ impl BridgeClient {
     /// Open TuxGuitar's Save-As dialog so the user can save a copy.
     pub fn save_copy(&mut self) -> Result<SaveCopyResult, BridgeError> {
         self.call("save_copy", &json!({}))
+    }
+
+    /// Create a new track; `strings` are open pitches, string 1 first.
+    pub fn create_track(
+        &mut self,
+        name: &str,
+        strings: &[StringTuning],
+    ) -> Result<serde_json::Value, BridgeError> {
+        self.call("create_track", &json!({ "name": name, "strings": strings }))
+    }
+
+    pub fn change_tuning(
+        &mut self,
+        track_number: u32,
+        strings: &[StringTuning],
+        expected_revision: u64,
+    ) -> Result<serde_json::Value, BridgeError> {
+        self.call(
+            "change_tuning",
+            &json!({
+                "trackNumber": track_number,
+                "strings": strings,
+                "expectedRevision": expected_revision,
+            }),
+        )
+    }
+
+    pub fn play(&mut self) -> Result<serde_json::Value, BridgeError> {
+        self.call("play", &json!({}))
+    }
+
+    pub fn stop(&mut self) -> Result<serde_json::Value, BridgeError> {
+        self.call("stop", &json!({}))
     }
 
     pub fn spike_edit(&mut self) -> Result<SpikeEditResult, BridgeError> {

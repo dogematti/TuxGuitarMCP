@@ -168,6 +168,14 @@ public class McpSocketServer {
 				return this.service.readSelection();
 			case "apply_changeset":
 				return this.service.applyChangeset(params);
+			case "create_track":
+				return this.service.createTrack(params);
+			case "change_tuning":
+				return this.service.changeTuning(params);
+			case "play":
+				return this.service.play();
+			case "stop":
+				return this.service.stopPlayback();
 			case "save_copy":
 				return this.service.saveCopy();
 			case "spike_edit":

@@ -35,7 +35,7 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.3.0";
+	public static final String PLUGIN_VERSION = "0.4.0";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 
@@ -65,6 +65,8 @@ public class BridgeService {
 		capabilities.add("selection");
 		capabilities.add("edit");
 		capabilities.add("write");
+		capabilities.add("tracks");
+		capabilities.add("playback");
 		capabilities.add("undo");
 
 		JsonObject result = new JsonObject();
@@ -238,6 +240,118 @@ public class BridgeService {
 		result.addProperty("measuresAdded", outcome.measuresAdded);
 		result.addProperty("notesBefore", outcome.notesBefore);
 		result.addProperty("notesAfter", outcome.notesAfter);
+		return result;
+	}
+
+	public JsonObject createTrack(JsonObject params) throws RpcException {
+		final String name = params.has("name") ? params.get("name").getAsString() : null;
+		final com.google.gson.JsonArray strings =
+			params.has("strings") ? params.getAsJsonArray("strings") : null;
+
+		// Actions are executed on THIS (socket) thread, the pattern TuxGuitar
+		// itself uses (TGActionProcessor.process spawns worker threads):
+		// TGLockableActionListener defers lockable actions when they are
+		// invoked from the UI thread, which would race our result checks.
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		int before = song.countTracks();
+
+		// action.track.add-new is wired to TGUndoableAddTrackController
+		// in the app's action config, so undo comes with it.
+		app.tuxguitar.editor.action.TGActionProcessor add =
+			new app.tuxguitar.editor.action.TGActionProcessor(this.context, "action.track.add-new");
+		add.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_SONG, song);
+		add.processOnCurrentThread();
+
+		if (song.countTracks() != before + 1) {
+			throw new RpcException(RpcException.EDIT_FAILED, "track was not created");
+		}
+		TGTrack track = song.getTrack(song.countTracks() - 1);
+
+		if (name != null) {
+			app.tuxguitar.editor.action.TGActionProcessor rename =
+				new app.tuxguitar.editor.action.TGActionProcessor(this.context, "action.track.set-name");
+			rename.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_TRACK, track);
+			rename.setAttribute("name", name);
+			rename.processOnCurrentThread();
+		}
+		if (strings != null && strings.size() > 0) {
+			this.runChangeTuning(track, strings);
+		}
+		final AtomicReference<Integer> trackNumberRef = new AtomicReference<>(track.getNumber());
+		JsonObject result = new JsonObject();
+		result.addProperty("trackNumber", trackNumberRef.get());
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
+		return result;
+	}
+
+	public JsonObject changeTuning(JsonObject params) throws RpcException {
+		final int trackNumber = params.has("trackNumber") ? params.get("trackNumber").getAsInt() : 1;
+		final com.google.gson.JsonArray strings = params.getAsJsonArray("strings");
+		if (strings == null || strings.size() == 0) {
+			throw new RpcException(RpcException.INVALID_RANGE, "strings array is required");
+		}
+		if (params.has("expectedRevision")) {
+			long expected = params.get("expectedRevision").getAsLong();
+			long current = this.revisionTracker.getRevision();
+			if (expected != current) {
+				throw new RpcException(RpcException.STALE_REVISION,
+					"score changed: expected revision " + expected + ", current is " + current);
+			}
+		}
+
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		TGTrack track = new MeasureReader().findTrack(song, trackNumber);
+		if (track == null) {
+			throw new RpcException(RpcException.INVALID_RANGE, "track " + trackNumber + " not found");
+		}
+		this.runChangeTuning(track, strings);
+		JsonObject result = new JsonObject();
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
+		return result;
+	}
+
+	/** Runs action.track.change-tuning (undoable via the app's action config). */
+	private void runChangeTuning(TGTrack track, com.google.gson.JsonArray strings) {
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		java.util.List<app.tuxguitar.song.models.TGString> list =
+			new java.util.ArrayList<app.tuxguitar.song.models.TGString>();
+		for (int i = 0; i < strings.size(); i++) {
+			JsonObject wire = strings.get(i).getAsJsonObject();
+			app.tuxguitar.song.models.TGString string =
+				documentManager.getSongManager().getFactory().newString();
+			string.setNumber(wire.has("number") ? wire.get("number").getAsInt() : i + 1);
+			string.setValue(wire.has("openPitch") ? wire.get("openPitch").getAsInt() : 0);
+			list.add(string);
+		}
+		app.tuxguitar.editor.action.TGActionProcessor tuning =
+			new app.tuxguitar.editor.action.TGActionProcessor(this.context, "action.track.change-tuning");
+		tuning.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_TRACK, track);
+		tuning.setAttribute("strings", list);
+		tuning.setAttribute("offset", Integer.valueOf(track.getOffset()));
+		tuning.processOnCurrentThread();
+	}
+
+	public JsonObject play() throws RpcException {
+		new app.tuxguitar.editor.action.TGActionProcessor(
+			this.context, "action.transport.play").processOnCurrentThread();
+		JsonObject result = new JsonObject();
+		result.addProperty("playing", TuxGuitar.getInstance().getPlayer().isRunning());
+		return result;
+	}
+
+	public JsonObject stopPlayback() throws RpcException {
+		new app.tuxguitar.editor.action.TGActionProcessor(
+			this.context, "action.transport.stop").processOnCurrentThread();
+		JsonObject result = new JsonObject();
+		result.addProperty("playing", TuxGuitar.getInstance().getPlayer().isRunning());
 		return result;
 	}
 

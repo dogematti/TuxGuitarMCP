@@ -8,4 +8,4 @@ pub use analysis::{
     detect_scales, explain, melodic_intervals, tonal_center, transpose_measures, NoteEvent,
     ScaleCandidate, TransposeProblem,
 };
-pub use pitch::{note_name, pitch_class_name};
+pub use pitch::{note_name, parse_note, pitch_class_name, tuning_preset, TUNING_PRESETS};

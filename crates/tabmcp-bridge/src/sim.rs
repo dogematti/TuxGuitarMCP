@@ -475,6 +475,21 @@ fn handle_request(request: &Value, token: &str, state: &mut SimState) -> Value {
             )
         }
         "save_copy" => result_response(id, json!({ "dialogOpened": true })),
+        "create_track" => {
+            let new_revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
+            result_response(id, json!({ "trackNumber": 3, "newRevision": new_revision }))
+        }
+        "change_tuning" => {
+            let expected = params.get("expectedRevision").and_then(Value::as_u64);
+            let current = state.revision.load(Ordering::SeqCst);
+            if expected.is_some() && expected != Some(current) {
+                return error_response(id, error_codes::STALE_REVISION, "score changed");
+            }
+            let new_revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
+            result_response(id, json!({ "newRevision": new_revision }))
+        }
+        "play" => result_response(id, json!({ "playing": true })),
+        "stop" => result_response(id, json!({ "playing": false })),
         "spike_edit" => {
             state.spike_applied = true;
             let new_revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;

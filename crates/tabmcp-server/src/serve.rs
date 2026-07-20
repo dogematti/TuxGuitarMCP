@@ -209,6 +209,97 @@ struct EditOutcome {
     notes_after: Option<u32>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct CreateTrackParams {
+    /// Track name shown in TuxGuitar (e.g. "7-String Rhythm").
+    name: String,
+    /// Open-string note names, HIGHEST string first (e.g. 7-string A standard
+    /// = ["D4","A3","F3","C3","G2","D2","A1"]). Provide either this or preset.
+    #[serde(default)]
+    tuning: Option<Vec<String>>,
+    /// A preset name instead of explicit tuning. One of: "6-string standard",
+    /// "6-string drop D", "6-string E-flat", "6-string drop C",
+    /// "7-string B standard", "7-string A standard", "8-string F# standard",
+    /// "4-string bass", "5-string bass".
+    #[serde(default)]
+    preset: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ChangeTuningParams {
+    /// Track number (1-based).
+    track_number: u32,
+    /// Open-string note names, highest string first. Either this or preset.
+    #[serde(default)]
+    tuning: Option<Vec<String>>,
+    /// A preset name (same options as in tuxguitar_create_track).
+    #[serde(default)]
+    preset: Option<String>,
+    /// False (default): preview only. True: apply — requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call.
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+/// Resolve preset/tuning params to string tunings (string 1 = highest first).
+fn resolve_tuning(
+    tuning: &Option<Vec<String>>,
+    preset: &Option<String>,
+) -> Result<Vec<tabmcp_model::StringTuning>, ErrorData> {
+    let pitches: Vec<u8> = match (tuning, preset) {
+        (Some(names), _) if !names.is_empty() => names
+            .iter()
+            .map(|name| {
+                tabmcp_theory::parse_note(name).ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        format!("cannot parse note name '{name}' (expected e.g. \"A1\", \"F#3\")"),
+                        None,
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?,
+        (_, Some(preset_name)) => tabmcp_theory::tuning_preset(preset_name)
+            .ok_or_else(|| {
+                let known: Vec<&str> = tabmcp_theory::TUNING_PRESETS
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect();
+                ErrorData::invalid_params(
+                    format!(
+                        "unknown preset '{preset_name}'; known presets: {}",
+                        known.join(", ")
+                    ),
+                    None,
+                )
+            })?
+            .to_vec(),
+        _ => {
+            return Err(ErrorData::invalid_params(
+                "provide either tuning (note names, highest string first) or preset",
+                None,
+            ))
+        }
+    };
+    Ok(pitches
+        .iter()
+        .enumerate()
+        .map(|(i, &open_pitch)| tabmcp_model::StringTuning {
+            number: i as u32 + 1,
+            open_pitch,
+        })
+        .collect())
+}
+
+fn tuning_names(strings: &[tabmcp_model::StringTuning]) -> String {
+    strings
+        .iter()
+        .map(|s| note_name(s.open_pitch))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn count_notes(measures: &[tabmcp_model::Measure]) -> u32 {
     measures
         .iter()
@@ -662,6 +753,136 @@ impl TabMcp {
             notes_before: Some(note_count),
             notes_after: Some(note_count),
         }))
+    }
+
+    #[tool(
+        description = "Create a new track in the open score with a name and tuning (explicit note names or a preset like '7-string A standard'). The new track is appended after the existing ones and is undoable.",
+        annotations(
+            title = "Create track",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_create_track(
+        &self,
+        params: Parameters<CreateTrackParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let strings = resolve_tuning(&p.tuning, &p.preset)?;
+        let names = tuning_names(&strings);
+        let name = p.name.clone();
+        let result = self
+            .call_bridge(move |client| client.create_track(&name, &strings))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let track_number = result
+            .get("trackNumber")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        Ok(format!(
+            "Created track {} \"{}\" with {}-string tuning: {} (high to low). \
+             Write to it with tuxguitar_replace_measures using track_number={}.",
+            track_number,
+            p.name,
+            names.split(' ').count(),
+            names,
+            track_number,
+        ))
+    }
+
+    #[tool(
+        description = "Change the tuning of an existing track (explicit note names or a preset like '7-string A standard'; this also changes the string count). TWO-STEP SAFETY: preview first, then confirm=true with expected_revision. Undoable.",
+        annotations(
+            title = "Change tuning",
+            read_only_hint = false,
+            destructive_hint = true
+        )
+    )]
+    async fn tuxguitar_change_tuning(
+        &self,
+        params: Parameters<ChangeTuningParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let strings = resolve_tuning(&p.tuning, &p.preset)?;
+        let names = tuning_names(&strings);
+        let song = self.fetch_song().await?;
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == p.track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {} does not exist", p.track_number), None)
+            })?;
+
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY — nothing changed. Would retune track {} (\"{}\") from [{}] \
+                     to [{}] ({} strings). Existing notes keep their fret numbers, so sounding \
+                     pitches shift with the tuning. To apply, call again with confirm=true and \
+                     expected_revision={}.",
+                    p.track_number,
+                    track.name,
+                    tuning_names(&track.strings),
+                    names,
+                    strings.len(),
+                    song.revision,
+                ),
+                revision: song.revision,
+                measures_added: None,
+                notes_before: None,
+                notes_after: None,
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.change_tuning(p.track_number, &strings, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied: track {} retuned to [{}]. The user can undo with Cmd+Z.",
+                p.track_number, names,
+            ),
+            revision: result
+                .get("newRevision")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            measures_added: None,
+            notes_before: None,
+            notes_after: None,
+        }))
+    }
+
+    #[tool(
+        description = "Start playback in TuxGuitar from the current cursor position (acts like the play button; calling while playing pauses). Use tuxguitar_stop to stop.",
+        annotations(title = "Play", read_only_hint = false, destructive_hint = false)
+    )]
+    async fn tuxguitar_play(&self) -> Result<String, ErrorData> {
+        self.call_bridge(|client| client.play())
+            .await
+            .map(|_| "Playback toggled in TuxGuitar.".to_string())
+            .map_err(BridgeCallError::into_error_data)
+    }
+
+    #[tool(
+        description = "Stop playback in TuxGuitar and return the cursor to where playback started.",
+        annotations(title = "Stop", read_only_hint = false, destructive_hint = false)
+    )]
+    async fn tuxguitar_stop(&self) -> Result<String, ErrorData> {
+        self.call_bridge(|client| client.stop())
+            .await
+            .map(|_| "Playback stopped.".to_string())
+            .map_err(BridgeCallError::into_error_data)
     }
 
     #[tool(
