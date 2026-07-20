@@ -102,7 +102,11 @@ can write expressive tablature, not just note grids.
 
 **Virtual ear (AI feedback loop)** — v1 shipped as tuxguitar_analyze_arrangement
 (symbolic cross-track listening: dissonance clashes, register masking,
-rhythmic tightness, empty bars, velocity balance); v2 below adds audio DSP.
+rhythmic tightness, empty bars, velocity balance); v2 shipped as
+tuxguitar_render_and_listen (headless MIDI -> fluidsynth + TuxGuitar's own
+MagicSFver2 soundfont -> WAV -> DSP: loudness, clipping, spectral balance,
+quiet holes; WAV kept for the user). v3 ideas: per-track stem rendering,
+measure-aligned audio mapping, score-vs-audio onset verification.
 - `render_and_analyze`: headless MIDI export -> fluidsynth render -> DSP
   feature extraction (onset alignment, per-track loudness curves, spectral
   balance, low-end mud detection) -> structured report the AI edits from.
