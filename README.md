@@ -14,10 +14,10 @@ See [PLAN.md](PLAN.md) for the full architecture and
 
 ## Status
 
-Phase 4 complete — AI clients can read, analyze, **and write** the open score
+Phase 6 complete — AI clients can read, analyze, **write, and refine** the open score
 in TuxGuitar 2.0.1:
 
-- **`tabmcp serve`** exposes 12 MCP tools over stdio — reading
+- **`tabmcp serve`** exposes 16 MCP tools over stdio — reading
   (`tuxguitar_get_bridge_status`, `tuxguitar_get_score_summary`,
   `tuxguitar_get_measures`, `tuxguitar_get_selection`), analysis
   (`tuxguitar_detect_key_and_scale`, `tuxguitar_explain_selection`), and
@@ -28,7 +28,7 @@ in TuxGuitar 2.0.1:
 - Every edit is **two-step** (preview → confirm with the previewed revision),
   **revision-checked** (rejected if the score changed in between), **atomic**,
   and **undoable with a single Cmd+Z** — including auto-appended measures
-- The bridge plugin (0.3.0) applies change-sets through TuxGuitar's undo
+- The bridge plugin (0.4.0) applies change-sets through TuxGuitar's undo
   system on the UI thread under the editor lock
 - The theory engine detects scales/tonal centers and produces plain-language
   explanations; transposition is string/fret-aware and refuses edits that
