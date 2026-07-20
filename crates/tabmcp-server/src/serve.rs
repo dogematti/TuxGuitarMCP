@@ -462,6 +462,13 @@ struct InsertMeasuresParams {
     count: Option<u32>,
 }
 
+#[derive(Default, Deserialize, JsonSchema)]
+struct StyleGuideParams {
+    /// Style name (e.g. "djent", "doom", "blues rock"). Omit to list all.
+    #[serde(default)]
+    style: Option<String>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 struct SetMarkerParams {
     /// Measure to mark (1-based).
@@ -1976,6 +1983,42 @@ impl TabMcp {
             notes_before: Some(result.notes_before),
             notes_after: Some(result.notes_after),
         }))
+    }
+
+    #[tool(
+        description = "Composition recipes per style: scales (from the 44-scale catalog), tempo range, rhythmic cells, techniques, matching drum styles, and signature devices — everything maps to existing tools. Call without a style to list the catalog. USE THIS before composing in a named genre: it turns vague style requests into concrete devices.",
+        annotations(title = "Style guide", read_only_hint = true)
+    )]
+    async fn tuxguitar_style_guide(
+        &self,
+        params: Parameters<StyleGuideParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        match p.style.as_deref() {
+            Some(name) => tabmcp_theory::styles::style_guide(name)
+                .map(tabmcp_theory::styles::describe)
+                .ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        format!(
+                            "unknown style '{name}'; available: {}",
+                            tabmcp_theory::styles::STYLES
+                                .iter()
+                                .map(|s| s.name)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        None,
+                    )
+                }),
+            None => Ok(format!(
+                "Available styles (pass one for the full recipe):\n{}",
+                tabmcp_theory::styles::STYLES
+                    .iter()
+                    .map(|s| format!("  {} — {} BPM, {}", s.name, s.tempo, s.drums))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )),
+        }
     }
 
     #[tool(

@@ -7,6 +7,7 @@ pub mod critique;
 pub mod fingering;
 pub mod generation;
 pub mod pitch;
+pub mod styles;
 
 pub use analysis::{
     detect_scales, explain, melodic_intervals, tonal_center, transpose_measures, NoteEvent,
