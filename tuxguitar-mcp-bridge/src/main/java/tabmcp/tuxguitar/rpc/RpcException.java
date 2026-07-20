@@ -9,6 +9,7 @@ public class RpcException extends Exception {
 	public static final String PROTOCOL_VERSION = "E_PROTOCOL_VERSION";
 	public static final String NO_DOCUMENT = "E_NO_DOCUMENT";
 	public static final String INVALID_RANGE = "E_INVALID_RANGE";
+	public static final String STALE_REVISION = "E_STALE_REVISION";
 	public static final String EDIT_FAILED = "E_EDIT_FAILED";
 	public static final String LOCKED = "E_LOCKED";
 	public static final String UNSUPPORTED = "E_UNSUPPORTED";

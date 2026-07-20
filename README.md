@@ -14,19 +14,23 @@ See [PLAN.md](PLAN.md) for the full architecture and
 
 ## Status
 
-Phase 3 complete — a working MCP server against TuxGuitar 2.0.1:
+Phase 4 complete — AI clients can read, analyze, **and write** the open score
+in TuxGuitar 2.0.1:
 
-- **`tabmcp serve`** exposes 8 MCP tools over stdio:
-  `tuxguitar_get_bridge_status`, `tuxguitar_get_score_summary`,
-  `tuxguitar_get_measures`, `tuxguitar_get_selection`,
-  `tuxguitar_detect_key_and_scale`, `tuxguitar_explain_selection`,
-  `tuxguitar_undo`, `tuxguitar_redo`
-- The bridge plugin (0.2.0) serves song, measure content (beats, voices,
-  durations, string/fret, effect flags), and the live selection/caret
-- The theory engine detects scales/tonal centers (correctly separates
-  A minor pentatonic from C major) and produces plain-language explanations
-- Edits land in TuxGuitar's undo stack (proven by the Milestone-1 spike);
-  the change-set edit model is Phase 4
+- **`tabmcp serve`** exposes 11 MCP tools over stdio — reading
+  (`tuxguitar_get_bridge_status`, `tuxguitar_get_score_summary`,
+  `tuxguitar_get_measures`, `tuxguitar_get_selection`), analysis
+  (`tuxguitar_detect_key_and_scale`, `tuxguitar_explain_selection`), and
+  editing (`tuxguitar_replace_measures`, `tuxguitar_transpose`,
+  `tuxguitar_undo`, `tuxguitar_redo`, `tuxguitar_save_copy`)
+- Every edit is **two-step** (preview → confirm with the previewed revision),
+  **revision-checked** (rejected if the score changed in between), **atomic**,
+  and **undoable with a single Cmd+Z** — including auto-appended measures
+- The bridge plugin (0.3.0) applies change-sets through TuxGuitar's undo
+  system on the UI thread under the editor lock
+- The theory engine detects scales/tonal centers and produces plain-language
+  explanations; transposition is string/fret-aware and refuses edits that
+  would fall off the fretboard
 
 ## Using with an MCP client
 

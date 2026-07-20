@@ -9,8 +9,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tabmcp_model::{
-    ClientInfo, DiscoveryInfo, HelloParams, HelloResult, MeasureRange, PingResult, Selection, Song,
-    SpikeEditResult, UndoResult, PROTOCOL_VERSION,
+    ApplyResult, ClientInfo, DiscoveryInfo, HelloParams, HelloResult, Measure, MeasureRange,
+    PingResult, SaveCopyResult, Selection, Song, SpikeEditResult, UndoResult, PROTOCOL_VERSION,
 };
 
 use crate::discovery::read_discovery;
@@ -111,6 +111,34 @@ impl BridgeClient {
 
     pub fn read_selection(&mut self) -> Result<Selection, BridgeError> {
         self.call("read_selection", &json!({}))
+    }
+
+    /// Replace the contents of `from_measure..` on a track with `measures`,
+    /// atomically and undoably, iff the score is still at `expected_revision`.
+    pub fn apply_replace_measures(
+        &mut self,
+        track_number: u32,
+        from_measure: u32,
+        measures: &[Measure],
+        expected_revision: u64,
+    ) -> Result<ApplyResult, BridgeError> {
+        self.call(
+            "apply_changeset",
+            &json!({
+                "expectedRevision": expected_revision,
+                "changes": [{
+                    "type": "replaceMeasureRange",
+                    "trackNumber": track_number,
+                    "fromMeasure": from_measure,
+                    "measures": measures,
+                }],
+            }),
+        )
+    }
+
+    /// Open TuxGuitar's Save-As dialog so the user can save a copy.
+    pub fn save_copy(&mut self) -> Result<SaveCopyResult, BridgeError> {
+        self.call("save_copy", &json!({}))
     }
 
     pub fn spike_edit(&mut self) -> Result<SpikeEditResult, BridgeError> {

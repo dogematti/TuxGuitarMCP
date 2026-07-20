@@ -21,6 +21,7 @@ import app.tuxguitar.util.TGSynchronizer;
 import app.tuxguitar.util.TGVersion;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import tabmcp.tuxguitar.edit.ChangesetApplier;
 import tabmcp.tuxguitar.edit.SpikeEdit;
 import tabmcp.tuxguitar.read.MeasureReader;
 import tabmcp.tuxguitar.read.RevisionTracker;
@@ -34,7 +35,7 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.2.0";
+	public static final String PLUGIN_VERSION = "0.3.0";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 
@@ -63,6 +64,7 @@ public class BridgeService {
 		capabilities.add("read");
 		capabilities.add("selection");
 		capabilities.add("edit");
+		capabilities.add("write");
 		capabilities.add("undo");
 
 		JsonObject result = new JsonObject();
@@ -175,6 +177,79 @@ public class BridgeService {
 			throw new RpcException(RpcException.INTERNAL, "selection state unavailable");
 		}
 		result.addProperty("revision", this.revisionTracker.getRevision());
+		return result;
+	}
+
+	public JsonObject applyChangeset(JsonObject params) throws RpcException {
+		if (!params.has("expectedRevision")) {
+			throw new RpcException(RpcException.STALE_REVISION,
+				"apply_changeset requires expectedRevision");
+		}
+		final long expectedRevision = params.get("expectedRevision").getAsLong();
+		com.google.gson.JsonArray changes = params.getAsJsonArray("changes");
+		if (changes == null || changes.size() != 1) {
+			throw new RpcException(RpcException.UNSUPPORTED,
+				"protocol v1 supports exactly one change per change-set");
+		}
+		final JsonObject change = changes.get(0).getAsJsonObject();
+		String type = change.has("type") ? change.get("type").getAsString() : "";
+		if (!"replaceMeasureRange".equals(type)) {
+			throw new RpcException(RpcException.UNSUPPORTED, "unsupported change type: " + type);
+		}
+
+		final AtomicReference<ChangesetApplier.Outcome> outcomeRef = new AtomicReference<>();
+		final AtomicReference<RpcException> rpcErrorRef = new AtomicReference<>();
+		this.runOnUiThread(new Runnable() {
+			public void run() {
+				final TGEditorManager editor = TGEditorManager.getInstance(BridgeService.this.context);
+				editor.runLocked(new Runnable() {
+					public void run() {
+						long current = BridgeService.this.revisionTracker.getRevision();
+						if (current != expectedRevision) {
+							rpcErrorRef.set(new RpcException(RpcException.STALE_REVISION,
+								"score changed: expected revision " + expectedRevision
+									+ ", current is " + current + " — re-read and retry"));
+							return;
+						}
+						try {
+							outcomeRef.set(new ChangesetApplier()
+								.applyReplaceMeasureRange(BridgeService.this.context, change));
+						} catch (RpcException e) {
+							rpcErrorRef.set(e);
+						}
+					}
+				});
+				if (outcomeRef.get() != null) {
+					editor.updateSong();
+					editor.redraw();
+				}
+			}
+		});
+		if (rpcErrorRef.get() != null) {
+			throw rpcErrorRef.get();
+		}
+		ChangesetApplier.Outcome outcome = outcomeRef.get();
+		if (outcome == null) {
+			throw new RpcException(RpcException.EDIT_FAILED, "change-set was not applied");
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
+		result.addProperty("measuresReplaced", outcome.measuresReplaced);
+		result.addProperty("measuresAdded", outcome.measuresAdded);
+		result.addProperty("notesBefore", outcome.notesBefore);
+		result.addProperty("notesAfter", outcome.notesAfter);
+		return result;
+	}
+
+	public JsonObject saveCopy() throws RpcException {
+		this.runOnUiThread(new Runnable() {
+			public void run() {
+				new app.tuxguitar.editor.action.TGActionProcessor(
+					BridgeService.this.context, "action.file.save-as").processOnCurrentThread();
+			}
+		});
+		JsonObject result = new JsonObject();
+		result.addProperty("dialogOpened", true);
 		return result;
 	}
 

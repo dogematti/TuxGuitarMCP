@@ -5,6 +5,7 @@ pub mod analysis;
 pub mod pitch;
 
 pub use analysis::{
-    detect_scales, explain, melodic_intervals, tonal_center, NoteEvent, ScaleCandidate,
+    detect_scales, explain, melodic_intervals, tonal_center, transpose_measures, NoteEvent,
+    ScaleCandidate, TransposeProblem,
 };
 pub use pitch::{note_name, pitch_class_name};

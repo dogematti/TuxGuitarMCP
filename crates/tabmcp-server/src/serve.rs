@@ -150,6 +150,74 @@ struct UndoRedoResult {
     revision: u64,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct ReplaceMeasuresParams {
+    /// Track number as shown in TuxGuitar (1-based).
+    track_number: u32,
+    /// First measure to replace (1-based). The given measures land at
+    /// from_measure, from_measure+1, ...; measures past the end of the song
+    /// are appended automatically.
+    from_measure: u32,
+    /// The new measure contents. Beat startTicks may be measure-relative
+    /// (startTick 0 = start of the measure) or absolute ticks.
+    measures: Vec<tabmcp_model::Measure>,
+    /// False (default): return a preview and the revision to confirm with.
+    /// True: apply the edit — requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call. The edit is rejected if
+    /// the score changed since.
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct TransposeParams {
+    /// Semitones to transpose by (positive = up, negative = down).
+    semitones: i32,
+    /// Track number (1-based). Omit to use the active selection's track.
+    #[serde(default)]
+    track_number: Option<u32>,
+    /// First measure. Omit to use the selection, falling back to the whole track.
+    #[serde(default)]
+    from_measure: Option<u32>,
+    /// Last measure (inclusive).
+    #[serde(default)]
+    to_measure: Option<u32>,
+    /// False (default): preview only. True: apply — requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call.
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct EditOutcome {
+    /// False = this was a dry-run preview; nothing was changed.
+    applied: bool,
+    /// Human-readable description of what happened / would happen.
+    summary: String,
+    /// Score revision: pass as expected_revision when confirming a preview.
+    revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    measures_added: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes_before: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes_after: Option<u32>,
+}
+
+fn count_notes(measures: &[tabmcp_model::Measure]) -> u32 {
+    measures
+        .iter()
+        .flat_map(|m| &m.beats)
+        .flat_map(|b| &b.voices)
+        .map(|v| v.notes.len() as u32)
+        .sum()
+}
+
 // ---------- tools ----------
 
 #[tool_router]
@@ -348,6 +416,269 @@ impl TabMcp {
                     performed: r.performed,
                     revision: r.new_revision,
                 })
+            })
+            .map_err(BridgeCallError::into_error_data)
+    }
+
+    #[tool(
+        description = "Write tablature into the open score: replace a measure range on one track with new measures (notes as string+fret; measures past the end of the song are appended automatically). TWO-STEP SAFETY: call without confirm to get a preview and revision, then call again with confirm=true and expected_revision to apply. The edit is atomic and undoable with Cmd+Z.",
+        annotations(
+            title = "Replace measures",
+            read_only_hint = false,
+            destructive_hint = true
+        )
+    )]
+    async fn tuxguitar_replace_measures(
+        &self,
+        params: Parameters<ReplaceMeasuresParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(mut p) = params;
+        if p.measures.is_empty() || p.measures.len() > MAX_MEASURES_PER_READ as usize {
+            return Err(ErrorData::invalid_params(
+                format!("provide 1..={MAX_MEASURES_PER_READ} measures"),
+                None,
+            ));
+        }
+        if p.from_measure == 0 {
+            return Err(ErrorData::invalid_params("from_measure must be >= 1", None));
+        }
+        // Renumber sequentially from from_measure so callers can't create gaps.
+        for (i, measure) in p.measures.iter_mut().enumerate() {
+            measure.number = p.from_measure + i as u32;
+        }
+        let to_measure = p.from_measure + p.measures.len() as u32 - 1;
+        let notes_after = count_notes(&p.measures);
+
+        let song = self.fetch_song().await?;
+        let song_len = song.headers.len() as u32;
+        if !song.tracks.iter().any(|t| t.number == p.track_number) {
+            return Err(ErrorData::invalid_params(
+                format!("track {} does not exist", p.track_number),
+                None,
+            ));
+        }
+        let notes_before = if p.from_measure <= song_len {
+            let track_number = p.track_number;
+            let from = p.from_measure;
+            let to = to_measure.min(song_len);
+            let existing = self
+                .call_bridge(move |client| client.read_measures(track_number, from, to))
+                .await
+                .map_err(BridgeCallError::into_error_data)?;
+            count_notes(&existing.measures)
+        } else {
+            0
+        };
+        let measures_added = to_measure.saturating_sub(song_len);
+
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY — nothing changed. Would replace measures {}-{} on track {} \
+                     ({} notes now, {} notes after{}). To apply, call again with confirm=true \
+                     and expected_revision={}.",
+                    p.from_measure,
+                    to_measure,
+                    p.track_number,
+                    notes_before,
+                    notes_after,
+                    if measures_added > 0 {
+                        format!(", appending {measures_added} new measure(s) to the song")
+                    } else {
+                        String::new()
+                    },
+                    song.revision,
+                ),
+                revision: song.revision,
+                measures_added: Some(measures_added),
+                notes_before: Some(notes_before),
+                notes_after: Some(notes_after),
+            }));
+        }
+
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(
+                    p.track_number,
+                    p.from_measure,
+                    &p.measures,
+                    expected_revision,
+                )
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied: replaced {} measure(s){} on track {}; {} notes -> {} notes. \
+                 The user can undo with Cmd+Z.",
+                result.measures_replaced,
+                if result.measures_added > 0 {
+                    format!(" (added {} new)", result.measures_added)
+                } else {
+                    String::new()
+                },
+                p.track_number,
+                result.notes_before,
+                result.notes_after,
+            ),
+            revision: result.new_revision,
+            measures_added: Some(result.measures_added),
+            notes_before: Some(result.notes_before),
+            notes_after: Some(result.notes_after),
+        }))
+    }
+
+    #[tool(
+        description = "Transpose a passage by N semitones, re-fretting on the same strings. Defaults to the user's active selection. TWO-STEP SAFETY: preview first, then confirm=true with expected_revision. Fails with a per-note list if any note would fall off the fretboard.",
+        annotations(title = "Transpose", read_only_hint = false, destructive_hint = true)
+    )]
+    async fn tuxguitar_transpose(
+        &self,
+        params: Parameters<TransposeParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let (song, selection) = self
+            .call_bridge(|client| {
+                let song = client.read_song()?;
+                let selection = client.read_selection()?;
+                Ok((song, selection))
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+
+        let track_number = p
+            .track_number
+            .or(if selection.active {
+                selection.track_number
+            } else {
+                None
+            })
+            .unwrap_or(1);
+        let song_len = song.headers.len() as u32;
+        let (from, to) = match (p.from_measure, p.to_measure) {
+            (Some(from), Some(to)) => (from, to),
+            (Some(from), None) => (from, from),
+            (None, _) if selection.active => (
+                selection.from_measure.unwrap_or(1),
+                selection.to_measure.unwrap_or(song_len),
+            ),
+            _ => (1, song_len.max(1)),
+        };
+        if from == 0 || to < from || to > song_len {
+            return Err(ErrorData::invalid_params(
+                format!("invalid measure range {from}-{to}: the score has measures 1-{song_len}"),
+                None,
+            ));
+        }
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track_number} does not exist"), None)
+            })?;
+        let max_fret = if track.max_fret > 0 {
+            track.max_fret
+        } else {
+            24
+        };
+
+        let range = self
+            .call_bridge(move |client| client.read_measures(track_number, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let mut measures = range.measures;
+        let note_count = count_notes(&measures);
+        let problems = tabmcp_theory::transpose_measures(&mut measures, p.semitones, max_fret);
+        if !problems.is_empty() {
+            let listing: Vec<String> = problems
+                .iter()
+                .take(10)
+                .map(|problem| {
+                    format!(
+                        "measure {}: string {} fret {} -> {}",
+                        problem.measure, problem.string, problem.old_fret, problem.target_fret
+                    )
+                })
+                .collect();
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "cannot transpose by {} semitones on the same strings — {} note(s) would \
+                     leave the fretboard (0..{}): {}. Try a smaller interval or the octave in \
+                     the other direction.",
+                    p.semitones,
+                    problems.len(),
+                    max_fret,
+                    listing.join("; "),
+                ),
+                None,
+            ));
+        }
+
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY — nothing changed. Would transpose {} note(s) in measures \
+                     {}-{} of track {} by {} semitone(s), same strings. To apply, call again \
+                     with confirm=true and expected_revision={}.",
+                    note_count, from, to, track_number, p.semitones, range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: Some(note_count),
+                notes_after: Some(note_count),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track_number, from, &measures, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied: transposed measures {}-{} of track {} by {} semitone(s). \
+                 The user can undo with Cmd+Z.",
+                from, to, track_number, p.semitones,
+            ),
+            revision: result.new_revision,
+            measures_added: None,
+            notes_before: Some(note_count),
+            notes_after: Some(note_count),
+        }))
+    }
+
+    #[tool(
+        description = "Open TuxGuitar's Save-As dialog so the user can save the current score (e.g. as a copy before/after AI edits). The user chooses the filename and location themselves.",
+        annotations(title = "Save a copy", read_only_hint = true)
+    )]
+    async fn tuxguitar_save_copy(&self) -> Result<String, ErrorData> {
+        self.call_bridge(|client| client.save_copy())
+            .await
+            .map(|result| {
+                if result.dialog_opened {
+                    "TuxGuitar's Save-As dialog is now open — the user picks the file name \
+                     and location."
+                        .to_string()
+                } else {
+                    "Save-As could not be opened.".to_string()
+                }
             })
             .map_err(BridgeCallError::into_error_data)
     }

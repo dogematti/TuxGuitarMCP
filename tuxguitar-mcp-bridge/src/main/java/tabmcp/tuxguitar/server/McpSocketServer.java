@@ -166,6 +166,10 @@ public class McpSocketServer {
 				return this.service.readMeasures(params);
 			case "read_selection":
 				return this.service.readSelection();
+			case "apply_changeset":
+				return this.service.applyChangeset(params);
+			case "save_copy":
+				return this.service.saveCopy();
 			case "spike_edit":
 				return this.service.spikeEdit();
 			case "undo":

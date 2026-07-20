@@ -123,7 +123,13 @@ pub struct Beat {
 pub struct Measure {
     /// 1-based measure number.
     pub number: u32,
+    /// Tick at which this measure starts. Beat `startTick`s are absolute;
+    /// when applying edits, beats are positioned by their offset from this
+    /// value, so content can be written with `startTick: 0` + offsets too.
+    #[serde(default)]
+    pub start_tick: u64,
     /// TuxGuitar key signature code (0 = C major / A minor).
+    #[serde(default)]
     pub key_signature: i32,
     pub beats: Vec<Beat>,
 }
@@ -138,6 +144,25 @@ pub struct MeasureRange {
     pub measures: Vec<Measure>,
     pub revision: u64,
     pub document_id: String,
+}
+
+/// Result of `apply_changeset`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyResult {
+    pub new_revision: u64,
+    pub measures_replaced: u32,
+    /// Measures appended to the song because the range extended past its end.
+    pub measures_added: u32,
+    pub notes_before: u32,
+    pub notes_after: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveCopyResult {
+    /// True when TuxGuitar's Save-As dialog was opened for the user.
+    pub dialog_opened: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

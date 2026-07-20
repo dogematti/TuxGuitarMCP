@@ -192,6 +192,7 @@ pub fn demo_measures(from: u32, to: u32) -> Vec<Measure> {
             };
             Measure {
                 number,
+                start_tick: measure_start,
                 key_signature: 0,
                 beats,
             }
@@ -266,6 +267,10 @@ struct SimState {
     revision: AtomicU64,
     /// Simulated fret of the spike note: None until spike_edit runs.
     spike_applied: bool,
+    /// Track-1 measures overridden by apply_changeset (number -> content).
+    overrides: std::collections::HashMap<u32, Measure>,
+    /// Simulated song length in measures (apply_changeset can extend it).
+    measure_count: u32,
 }
 
 fn serve_client(stream: TcpStream, token: &str, shutdown: &AtomicBool) -> std::io::Result<()> {
@@ -278,6 +283,8 @@ fn serve_client(stream: TcpStream, token: &str, shutdown: &AtomicBool) -> std::i
         authenticated: false,
         revision: AtomicU64::new(0),
         spike_applied: false,
+        overrides: std::collections::HashMap::new(),
+        measure_count: 4,
     };
 
     let mut line = String::new();
@@ -373,11 +380,14 @@ fn handle_request(request: &Value, token: &str, state: &mut SimState) -> Value {
                 .and_then(Value::as_u64)
                 .unwrap_or(4)
                 .min(4) as u32;
-            if track > 2 || from == 0 || from > to {
+            if track > 2 || from == 0 || from > to || to > state.measure_count {
                 return error_response(id, error_codes::INVALID_RANGE, "bad track/measure range");
             }
-            let measures = if track == 1 {
+            let measures: Vec<Measure> = if track == 1 {
                 demo_measures(from, to)
+                    .into_iter()
+                    .map(|m| state.overrides.get(&m.number).cloned().unwrap_or(m))
+                    .collect()
             } else {
                 demo_measures(3, 3) // bass track: rests only in the sim
             };
@@ -409,6 +419,62 @@ fn handle_request(request: &Value, token: &str, state: &mut SimState) -> Value {
                 "revision": state.revision.load(Ordering::SeqCst),
             }),
         ),
+        "apply_changeset" => {
+            let expected = params.get("expectedRevision").and_then(Value::as_u64);
+            let current = state.revision.load(Ordering::SeqCst);
+            if expected != Some(current) {
+                return error_response(
+                    id,
+                    error_codes::STALE_REVISION,
+                    &format!("score changed: expected revision {expected:?}, current is {current}"),
+                );
+            }
+            let change = params
+                .get("changes")
+                .and_then(Value::as_array)
+                .and_then(|c| c.first())
+                .cloned()
+                .unwrap_or(Value::Null);
+            let measures: Vec<Measure> = match change
+                .get("measures")
+                .map(|m| serde_json::from_value(m.clone()))
+            {
+                Some(Ok(measures)) => measures,
+                _ => {
+                    return error_response(
+                        id,
+                        error_codes::INVALID_RANGE,
+                        "changes[0].measures missing or malformed",
+                    )
+                }
+            };
+            let notes_after: u32 = measures
+                .iter()
+                .flat_map(|m| &m.beats)
+                .flat_map(|b| &b.voices)
+                .map(|v| v.notes.len() as u32)
+                .sum();
+            let mut added = 0u32;
+            for measure in measures {
+                if measure.number > state.measure_count {
+                    state.measure_count = measure.number;
+                    added += 1;
+                }
+                state.overrides.insert(measure.number, measure);
+            }
+            let new_revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
+            result_response(
+                id,
+                json!({
+                    "newRevision": new_revision,
+                    "measuresReplaced": state.overrides.len() as u32 - added,
+                    "measuresAdded": added,
+                    "notesBefore": 0,
+                    "notesAfter": notes_after,
+                }),
+            )
+        }
+        "save_copy" => result_response(id, json!({ "dialogOpened": true })),
         "spike_edit" => {
             state.spike_applied = true;
             let new_revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;

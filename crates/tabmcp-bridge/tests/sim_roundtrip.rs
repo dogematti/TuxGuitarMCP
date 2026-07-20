@@ -48,6 +48,66 @@ fn full_roundtrip_against_simulator() {
 }
 
 #[test]
+fn write_path_applies_and_rejects_stale_revisions() {
+    let discovery_path = temp_discovery_path("write");
+    let handle = sim::start(&discovery_path).expect("simulator starts");
+    let mut client = BridgeClient::connect(&discovery_path).expect("client connects");
+
+    let before = client.read_measures(1, 3, 3).expect("read measure 3");
+    assert!(
+        before.measures[0].beats[0].voices[0].is_rest,
+        "measure 3 starts as a rest"
+    );
+    let revision = before.revision;
+
+    // Write one E5 quarter note into measure 3.
+    let mut measures = sim::demo_measures(3, 3);
+    measures[0].beats = vec![tabmcp_model::Beat {
+        start_tick: measures[0].start_tick,
+        voices: vec![tabmcp_model::Voice {
+            index: 0,
+            duration: tabmcp_model::Duration {
+                value: 4,
+                dotted: false,
+                double_dotted: false,
+                tuplet: tabmcp_model::Tuplet {
+                    enters: 1,
+                    times: 1,
+                },
+            },
+            is_rest: false,
+            notes: vec![tabmcp_model::Note {
+                string: 6,
+                fret: 12,
+                velocity: 95,
+                tied: false,
+                effects: tabmcp_model::NoteEffects::default(),
+            }],
+        }],
+    }];
+
+    let applied = client
+        .apply_replace_measures(1, 3, &measures, revision)
+        .expect("apply succeeds at current revision");
+    assert_eq!(applied.notes_after, 1);
+    assert!(applied.new_revision > revision);
+
+    let after = client.read_measures(1, 3, 3).expect("read back");
+    assert_eq!(after.measures[0].beats[0].voices[0].notes[0].fret, 12);
+
+    // Applying against the OLD revision must be rejected.
+    match client.apply_replace_measures(1, 3, &measures, revision) {
+        Err(BridgeError::Rejected { code, .. }) => assert_eq!(code, "E_STALE_REVISION"),
+        other => panic!(
+            "expected stale rejection, got: {:?}",
+            other.map(|r| r.new_revision)
+        ),
+    }
+
+    handle.stop();
+}
+
+#[test]
 fn wrong_token_is_rejected() {
     let discovery_path = temp_discovery_path("badtoken");
     let handle = sim::start(&discovery_path).expect("simulator starts");

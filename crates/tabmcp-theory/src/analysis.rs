@@ -188,6 +188,56 @@ pub fn melodic_intervals(events: &[NoteEvent]) -> Vec<String> {
         .collect()
 }
 
+/// A note that cannot be transposed on its current string.
+#[derive(Debug, Clone)]
+pub struct TransposeProblem {
+    pub measure: u32,
+    pub string: u32,
+    pub old_fret: u32,
+    pub target_fret: i64,
+}
+
+/// Transpose measures in place by `semitones`, keeping every note on its
+/// current string (re-fretting). Returns the notes that would fall off the
+/// fretboard; if any are returned, the input was NOT modified.
+pub fn transpose_measures(
+    measures: &mut [tabmcp_model::Measure],
+    semitones: i32,
+    max_fret: u32,
+) -> Vec<TransposeProblem> {
+    let mut problems = Vec::new();
+    for measure in measures.iter() {
+        for beat in &measure.beats {
+            for voice in &beat.voices {
+                for note in &voice.notes {
+                    let target = note.fret as i64 + semitones as i64;
+                    if target < 0 || target > max_fret as i64 {
+                        problems.push(TransposeProblem {
+                            measure: measure.number,
+                            string: note.string,
+                            old_fret: note.fret,
+                            target_fret: target,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if !problems.is_empty() {
+        return problems;
+    }
+    for measure in measures.iter_mut() {
+        for beat in &mut measure.beats {
+            for voice in &mut beat.voices {
+                for note in &mut voice.notes {
+                    note.fret = (note.fret as i64 + semitones as i64) as u32;
+                }
+            }
+        }
+    }
+    problems
+}
+
 /// Human-readable summary of a passage: notes, span, intervals, likely scale.
 pub fn explain(events: &[NoteEvent]) -> String {
     if events.is_empty() {

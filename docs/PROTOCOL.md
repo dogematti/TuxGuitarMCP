@@ -136,7 +136,35 @@ Result:
 ```
 `active: false` omits the range fields; the caret is reported whenever available.
 
-### spike_edit  *(Milestone 1 only — removed when `apply_changeset` lands)*
+### apply_changeset
+Params:
+```json
+{
+  "expectedRevision": 1,
+  "changes": [{
+    "type": "replaceMeasureRange",
+    "trackNumber": 1,
+    "fromMeasure": 1,
+    "measures": [ /* Measure objects as in read_measures */ ]
+  }]
+}
+```
+Replaces the contents of `fromMeasure..` on one track with the given measures,
+appending measures to the song when the range extends past its end. Protocol
+v1 accepts exactly one change per change-set. Atomic: applied entirely inside
+one editor lock on the UI thread, as ONE undoable edit (a single Ctrl+Z
+reverts content and appended measures together). Beat `startTick`s are
+interpreted relative to the measure's `startTick` (so 0-based offsets work).
+Rejected with `E_STALE_REVISION` (with expected/current in the message) when
+the score changed after `expectedRevision` was read.
+Result: `{ newRevision, measuresReplaced, measuresAdded, notesBefore, notesAfter }`
+Errors: `E_STALE_REVISION`, `E_NO_DOCUMENT`, `E_INVALID_RANGE`, `E_UNSUPPORTED`, `E_EDIT_FAILED`.
+
+### save_copy
+Opens TuxGuitar's own Save-As dialog (the user picks name/location — no
+filesystem paths cross the wire). Result: `{ dialogOpened }`.
+
+### spike_edit  *(Milestone 1 only — removed when the edit tools stabilize)*
 Hard-coded undoable edit at track 1 / measure 1 / beat 1: toggles string-6
 fret 5↔7, or adds a fret-5 quarter note if none exists.
 Result: `{ track, measure, description, newRevision }`
@@ -145,7 +173,6 @@ Errors: `E_NO_DOCUMENT`, `E_EDIT_FAILED`, `E_LOCKED`.
 ### undo / redo
 Result: `{ performed, newRevision }` — `performed: false` when the stack is empty.
 
-## Planned for Phase 4 (not yet implemented)
+## Planned (not yet implemented)
 
-`apply_changeset` (with `expectedRevision`), `save_copy`,
-`play`/`play_selection`/`stop`.
+`play`/`play_selection`/`stop`, `create_track`, `change_tuning`.

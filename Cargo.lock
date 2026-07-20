@@ -560,6 +560,9 @@ dependencies = [
 [[package]]
 name = "tabmcp-theory"
 version = "0.1.0"
+dependencies = [
+ "tabmcp-model",
+]
 
 [[package]]
 name = "thiserror"
