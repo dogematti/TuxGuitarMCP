@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>tabmcp</groupId>
+	<artifactId>tuxguitar-mcp-chat</artifactId>
+	<version>0.1.0</version>
+	<packaging>jar</packaging>
+	<name>TuxGuitar TabMCP Bridge Plugin</name>
+	<description>Exposes the open TuxGuitar score to the TabMCP Rust service over a localhost socket</description>
+
+	<properties>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<maven.compiler.release>11</maven.compiler.release>
+		<!-- TuxGuitar jars are installed into the local repo by scripts/install-tuxguitar-deps.sh -->
+		<tuxguitar.version>2.0.1</tuxguitar.version>
+	</properties>
+
+	<dependencies>
+		<dependency>
+			<groupId>app.tuxguitar</groupId>
+			<artifactId>tuxguitar-lib</artifactId>
+			<version>${tuxguitar.version}</version>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>app.tuxguitar</groupId>
+			<artifactId>tuxguitar-editor-utils</artifactId>
+			<version>${tuxguitar.version}</version>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>app.tuxguitar</groupId>
+			<artifactId>tuxguitar-ui-toolkit</artifactId>
+			<version>${tuxguitar.version}</version>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>app.tuxguitar</groupId>
+			<artifactId>tuxguitar</artifactId>
+			<version>${tuxguitar.version}</version>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.google.code.gson</groupId>
+			<artifactId>gson</artifactId>
+			<version>2.11.0</version>
+		</dependency>
+		<dependency>
+			<groupId>junit</groupId>
+			<artifactId>junit</artifactId>
+			<version>4.13.2</version>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<finalName>tuxguitar-mcp-chat</finalName>
+		<plugins>
+			<!-- Shade + relocate Gson: plugin jars share TuxGuitar's classloader,
+			     so bundled dependencies must not leak their original packages. -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-shade-plugin</artifactId>
+				<version>3.6.0</version>
+				<executions>
+					<execution>
+						<phase>package</phase>
+						<goals><goal>shade</goal></goals>
+						<configuration>
+							<relocations>
+								<relocation>
+									<pattern>com.google.gson</pattern>
+									<shadedPattern>tabmcp.shaded.gson</shadedPattern>
+								</relocation>
+							</relocations>
+							<filters>
+								<filter>
+									<artifact>com.google.code.gson:gson</artifact>
+									<excludes>
+										<exclude>META-INF/MANIFEST.MF</exclude>
+									</excludes>
+								</filter>
+							</filters>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+</project>

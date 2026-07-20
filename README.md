@@ -81,6 +81,28 @@ to the previewed revision), **revision-checked** (stale writes rejected),
 generated tracks. A golden wire-format fixture in CI guards the
 Rust<->Java protocol against accidental changes.
 
+## Embedded chat: the AI musician inside TuxGuitar
+
+Plugin 0.9.0 adds Tools -> "TabMCP: AI Musician Chat" - a chat window
+inside TuxGuitar backed by headless Claude Code. Type "write me a d-beat
+verse in A phrygian" and the reply streams into the panel while the tool
+calls hit this same TuxGuitar's score; tool activity shows live
+([tool] generate_riff ...), every edit stays undoable, and the session
+continues across messages (New Session resets it).
+
+Requirements: Claude Code installed. Optional config in
+`~/.tuxguitar-mcp/chat.properties`:
+
+```properties
+claude.path=/opt/homebrew/bin/claude   # auto-detected when omitted
+claude.model=opus                      # default: your CLI default
+tabmcp.path=/Users/you/.cargo/bin/tabmcp
+allowed.tools=mcp__tuxguitar           # auto-approved tool set
+```
+
+One bridge client at a time still applies: close other AI sessions while
+the embedded chat is composing.
+
 ## Quickstart
 
 Requirements: macOS with TuxGuitar 2.x installed, Rust toolchain, JDK 11+,
