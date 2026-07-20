@@ -604,6 +604,13 @@ struct GenerateRiffParams {
     to_measure: u32,
     /// Scale with root, e.g. "A phrygian dominant", "E harmonic minor".
     scale: String,
+    /// Style name: pulls the rubric's syncopation window as the default
+    /// AND structured hints from your player-notes files (lines like
+    /// "cells = gallop, tresillo", "density = 4-9",
+    /// "syncopation = 0.2-0.6", "accents = 0,1440,2880", "phrase = 4")
+    /// as defaults for any parameter you leave unset.
+    #[serde(default)]
+    style: Option<String>,
     /// Register bounds as note names (e.g. "A1".."D3"). Defaults to the
     /// track's lowest open string up to a 12th above it.
     #[serde(default)]
@@ -628,6 +635,109 @@ struct GenerateRiffParams {
     /// Palm-mute the unaccented low notes (default true).
     #[serde(default)]
     palm_mute_low: Option<bool>,
+    /// Per-bar tension arc 0..1 ("0.2,0.5,1.0") or an emotion journey
+    /// ("calm, menacing, furious") - density and register follow it and
+    /// phrase ends cadence to the root.
+    #[serde(default)]
+    tension_target: Option<String>,
+    /// Phrase length in measures for cadences (default 4; 0 disables).
+    #[serde(default)]
+    phrase_len: Option<u32>,
+    /// False (default): preview. True: apply - requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DiffMeasuresParams {
+    /// First range: track (1-based) and measures.
+    track_a: u32,
+    from_a: u32,
+    to_a: u32,
+    /// Second range. Omit track_b to compare within the same track.
+    #[serde(default)]
+    track_b: Option<u32>,
+    from_b: u32,
+    to_b: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct GenerateLeadParams {
+    /// Track to write into (1-based); its tuning defines playability.
+    track_number: u32,
+    /// Destination range (1-based, inclusive) - meters define the bars.
+    from_measure: u32,
+    to_measure: u32,
+    /// Scale with root, e.g. "A natural minor".
+    scale: String,
+    /// Register bounds as note names (default: 12th fret area - lead
+    /// territory above the riff).
+    #[serde(default)]
+    register_low: Option<String>,
+    #[serde(default)]
+    register_high: Option<String>,
+    /// Contour as comma-separated 0..1 values (default the classic solo
+    /// arc: build, peak at 3/4, resolve).
+    #[serde(default)]
+    contour: Option<String>,
+    /// Difficulty cap 1-10 (default 7). The line thins itself to fit.
+    #[serde(default)]
+    max_difficulty: Option<f64>,
+    /// False (default): preview. True: apply - requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct PlanHarmonyParams {
+    /// Scale with root, e.g. "A natural minor", "E phrygian dominant".
+    /// Needs a 7-note scale.
+    scale: String,
+    /// A mood recipe (dark, epic, driving, sad, triumphant, unresolved,
+    /// lift) or explicit scale degrees like "1-6-7-1".
+    progression: String,
+    /// Bars per chord in the printed plan (default 2).
+    #[serde(default)]
+    bars_per_chord: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct OrnamentParams {
+    /// Track (1-based).
+    track_number: u32,
+    /// Range to decorate (1-based, inclusive).
+    from_measure: u32,
+    to_measure: u32,
+    /// "standard" (vibrato/slides/sparse pinch), "aggressive" (pinch on
+    /// every low accent) or "tremolo" (sustains become tremolo picking -
+    /// black/death/surf). Default standard.
+    #[serde(default)]
+    flavor: Option<String>,
+    /// False (default): preview. True: apply - requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct TransitionParams {
+    /// "fill" (drum fill, back half of the bar), "buildup" (snare ramp,
+    /// whole bar, melodic velocities ramp too) or "stop" (band stop:
+    /// one accent then silence; melodic tracks keep the downbeat with
+    /// letRing).
+    kind: String,
+    /// The bar to rewrite (typically the LAST bar before a section
+    /// marker). Omit to transition before EVERY marker in the song.
+    #[serde(default)]
+    measure: Option<u32>,
+    /// Drum track number. Omit to auto-detect the percussion track.
+    #[serde(default)]
+    drum_track: Option<u32>,
     /// False (default): preview. True: apply - requires expected_revision.
     #[serde(default)]
     confirm: bool,
@@ -2810,7 +2920,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "CONSTRAINT-GUIDED RIFF GENERATION — beam search over the rhythm-cell alphabet and a scale's pitch space, scored WHILE generating: accent offsets get roots and accent marks (set them to the kick pattern for instant unison), syncopation stays in the target window, motion is mostly stepwise with b2/tritone spice, an AABA' form gives the riff grammar, velocities and palm mutes come pre-shaped. Deterministic: same constraints, same riff. Rhythm cells: quarter, 8ths, 16ths, gallop, reverse-gallop, herta, offbeat-8ths, and-of-one, tresillo, hemiola, triplet-8ths, quintuplet, dotted-8ths, sixteenth-rest-start, rest-8th, rest-quarter. Destination measures' meters define the bars (works in 7/8 etc.). TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
+        description = "CONSTRAINT-GUIDED RIFF GENERATION — beam search over the rhythm-cell alphabet and a scale's pitch space, scored WHILE generating: accent offsets get roots and accent marks (set them to the kick pattern for instant unison), syncopation stays in the target window, motion is mostly stepwise with b2/tritone spice, an AABA' form gives the riff grammar, velocities and palm mutes come pre-shaped; optional tension_target (numeric arc or emotion words) shapes density and register per bar, and phrase ends cadence to the root (phrase_len, default 4). Deterministic: same constraints, same riff. Rhythm cells: quarter, 8ths, 16ths, gallop, reverse-gallop, herta, offbeat-8ths, and-of-one, tresillo, hemiola, triplet-8ths, quintuplet, dotted-8ths, sixteenth-rest-start, rest-8th, rest-quarter. Destination measures' meters define the bars (works in 7/8 etc.). TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
         annotations(title = "Generate riff", read_only_hint = false, destructive_hint = true)
     )]
     async fn tuxguitar_generate_riff(
@@ -2886,6 +2996,40 @@ impl TabMcp {
             .filter(|pitch| steps.contains(&((pitch + 12 - root_pc) % 12)))
             .collect();
 
+        // Style defaults: rubric syncopation window + player-note hints
+        // fill any parameter left unset.
+        let mut p = p;
+        if let Some(style_name) = p.style.clone() {
+            let hints = Self::player_note_hints(&style_name);
+            if p.cells.is_none() {
+                p.cells = hints.get("cells").cloned();
+            }
+            if p.density.is_none() {
+                p.density = hints.get("density").cloned();
+            }
+            if p.accents.is_none() {
+                p.accents = hints.get("accents").cloned();
+            }
+            if p.register_low.is_none() && p.register_high.is_none() {
+                if let Some(reg) = hints.get("register") {
+                    if let Some((lo, hi)) = reg.split_once('-') {
+                        p.register_low = Some(lo.trim().to_string());
+                        p.register_high = Some(hi.trim().to_string());
+                    }
+                }
+            }
+            if p.phrase_len.is_none() {
+                p.phrase_len = hints.get("phrase").and_then(|v| v.trim().parse().ok());
+            }
+            if p.syncopation.is_none() {
+                p.syncopation = hints.get("syncopation").cloned().or_else(|| {
+                    tabmcp_theory::styles::style_guide(&style_name)
+                        .map(|g| format!("{}-{}", g.syncopation.0, g.syncopation.1))
+                });
+            }
+        }
+        let p = p;
+
         // Cells, accents, windows.
         let cells: Vec<&'static tabmcp_theory::cells::RhythmCell> = match &p.cells {
             Some(spec) => spec
@@ -2943,6 +3087,23 @@ impl TabMcp {
             measure_lens.push(if len > 0 { len } else { 3840 });
         }
 
+        // Tension: numeric arc or emotion journey.
+        let tension: Vec<f64> = match &p.tension_target {
+            None => Vec::new(),
+            Some(spec) => {
+                let numeric: Vec<f64> = spec
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if !numeric.is_empty() && numeric.len() == spec.split(',').count() {
+                    numeric
+                } else {
+                    tabmcp_theory::emotion::curve(spec)
+                        .map_err(|e| ErrorData::invalid_params(e, None))?
+                        .0
+                }
+            }
+        };
         let constraints = tabmcp_theory::search::RiffConstraints {
             pitch_pool,
             root_pc,
@@ -2953,6 +3114,8 @@ impl TabMcp {
             notes_per_measure: parse_range_u(&p.density, (4, 10)),
             max_pitch_repeat: 3,
             palm_mute_low: p.palm_mute_low.unwrap_or(true),
+            tension,
+            phrase_len: p.phrase_len.unwrap_or(4) as usize,
         };
         let first_start = range
             .measures
@@ -3008,6 +3171,566 @@ impl TabMcp {
             measures_added: Some(result.measures_added),
             notes_before: Some(notes),
             notes_after: Some(result.notes_after),
+        }))
+    }
+
+    #[tool(
+        description = "DIFF MEASURES — the musical git-diff: compare two ranges note-by-note (aligned by measure position and beat offset) and report added, removed, and changed notes (pitch, velocity, duration, effect changes) per measure. Use it to inspect what an edit or variation actually changed, to compare a riff against its variation, or to verify a transform did what it claimed. Read-only.",
+        annotations(title = "Diff measures", read_only_hint = true)
+    )]
+    async fn tuxguitar_diff_measures(
+        &self,
+        params: Parameters<DiffMeasuresParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let track_a = p.track_a;
+        let track_b = p.track_b.unwrap_or(track_a);
+        if p.from_a == 0
+            || p.to_a < p.from_a
+            || p.from_b == 0
+            || p.to_b < p.from_b
+            || p.to_a - p.from_a + 1 > MAX_MEASURES_PER_READ
+            || p.to_b - p.from_b + 1 > MAX_MEASURES_PER_READ
+        {
+            return Err(ErrorData::invalid_params("invalid range", None));
+        }
+        let (from_a, to_a, from_b, to_b) = (p.from_a, p.to_a, p.from_b, p.to_b);
+        let a = self
+            .call_bridge(move |client| client.read_measures(track_a, from_a, to_a))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let b = self
+            .call_bridge(move |client| client.read_measures(track_b, from_b, to_b))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+
+        fn note_key(effects: &tabmcp_model::NoteEffects) -> String {
+            let mut flags = Vec::new();
+            if effects.palm_mute { flags.push("pm"); }
+            if effects.accent || effects.heavy_accent { flags.push("acc"); }
+            if effects.vibrato { flags.push("vib"); }
+            if effects.slide { flags.push("sl"); }
+            if effects.let_ring { flags.push("lr"); }
+            if effects.harmonic.is_some() { flags.push("harm"); }
+            if effects.bend.is_some() { flags.push("bend"); }
+            if effects.tremolo_picking.is_some() { flags.push("trem"); }
+            if effects.grace.is_some() { flags.push("grace"); }
+            flags.join("+")
+        }
+        // offset -> (string, fret, velocity, duration value, effects tag)
+        type NoteMap = std::collections::BTreeMap<u64, Vec<(u32, u32, u32, u32, String)>>;
+        fn collect(measure: &tabmcp_model::Measure) -> NoteMap {
+            let mut map: NoteMap = NoteMap::new();
+            for beat in &measure.beats {
+                let offset = beat.start_tick.saturating_sub(measure.start_tick);
+                for voice in &beat.voices {
+                    for note in &voice.notes {
+                        map.entry(offset).or_default().push((
+                            note.string,
+                            note.fret,
+                            note.velocity,
+                            voice.duration.value,
+                            note_key(&note.effects),
+                        ));
+                    }
+                }
+            }
+            map
+        }
+
+        let count = (to_a - from_a + 1).max(to_b - from_b + 1);
+        let mut out = format!(
+            "DIFF: track {track_a} m{from_a}-{to_a}  vs  track {track_b} m{from_b}-{to_b}\n"
+        );
+        let mut added = 0usize;
+        let mut removed = 0usize;
+        let mut changed = 0usize;
+        for i in 0..count as usize {
+            let left = a.measures.get(i).map(collect).unwrap_or_default();
+            let right = b.measures.get(i).map(collect).unwrap_or_default();
+            if left == right {
+                continue;
+            }
+            let mut lines: Vec<String> = Vec::new();
+            let offsets: std::collections::BTreeSet<u64> =
+                left.keys().chain(right.keys()).copied().collect();
+            for offset in offsets {
+                let l = left.get(&offset);
+                let r = right.get(&offset);
+                match (l, r) {
+                    (Some(lnotes), None) => {
+                        removed += lnotes.len();
+                        for (string, fret, ..) in lnotes {
+                            lines.push(format!("    - t{offset}: s{string}f{fret}"));
+                        }
+                    }
+                    (None, Some(rnotes)) => {
+                        added += rnotes.len();
+                        for (string, fret, ..) in rnotes {
+                            lines.push(format!("    + t{offset}: s{string}f{fret}"));
+                        }
+                    }
+                    (Some(lnotes), Some(rnotes)) if lnotes != rnotes => {
+                        changed += lnotes.len().max(rnotes.len());
+                        let show = |notes: &Vec<(u32, u32, u32, u32, String)>| {
+                            notes
+                                .iter()
+                                .map(|(s, f, v, d, e)| {
+                                    format!(
+                                        "s{s}f{f} v{v} 1/{d}{}",
+                                        if e.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" [{e}]")
+                                        }
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        };
+                        lines.push(format!(
+                            "    ~ t{offset}: {}  ->  {}",
+                            show(lnotes),
+                            show(rnotes)
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            if !lines.is_empty() {
+                out.push_str(&format!(
+                    "  measure {}/{} (relative bar {}):\n{}\n",
+                    from_a + i as u32,
+                    from_b + i as u32,
+                    i + 1,
+                    lines.join("\n")
+                ));
+            }
+        }
+        if added + removed + changed == 0 {
+            out.push_str("  identical - no differences\n");
+        } else {
+            out.push_str(&format!(
+                "  TOTAL: {added} added, {removed} removed, {changed} changed\n"
+            ));
+        }
+        Ok(out)
+    }
+
+    #[tool(
+        description = "LEAD GENERATOR — a real lead line from lick cells (run-up/down, enclosure, pedal-return, leap-fall, waves, hold) driven by a contour arc (default: build, peak at three-quarters, resolve to the root), with question/answer phrase ends on alternating bars, breathing rests, fingering-optimized, and a difficulty cap the line thins itself to meet. This is solos, intros and hooks - use generate_counterline instead when you want an answer woven into an existing riff's gaps. Write onto an existing (ideally empty-range) track. TWO-STEP: preview, then confirm=true with expected_revision. Undoable. Follow with tuxguitar_ornament for vibrato and slides.",
+        annotations(title = "Generate lead", read_only_hint = false, destructive_hint = true)
+    )]
+    async fn tuxguitar_generate_lead(
+        &self,
+        params: Parameters<GenerateLeadParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let track_number = p.track_number;
+        let (from, to) = (p.from_measure, p.to_measure);
+        if from == 0 || to < from || to - from + 1 > MAX_MEASURES_PER_READ {
+            return Err(ErrorData::invalid_params("invalid range", None));
+        }
+        let song = self.fetch_song().await?;
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track_number} not found"), None)
+            })?;
+        let tuning: Vec<(u32, u8)> = track
+            .strings
+            .iter()
+            .map(|s| (s.number, s.open_pitch))
+            .collect();
+        let max_fret = if track.max_fret > 0 { track.max_fret } else { 24 };
+        let (root_name, scale_name) = p.scale.trim().split_once(' ').ok_or_else(|| {
+            ErrorData::invalid_params("scale must be '<root> <name>'", None)
+        })?;
+        let root_pc = tabmcp_theory::parse_note(&format!("{root_name}4"))
+            .map(|x| x % 12)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("unknown root '{root_name}'"), None)
+            })?;
+        let steps = tabmcp_theory::analysis::SCALES
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(scale_name.trim()))
+            .map(|(_, s)| *s)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("unknown scale '{}'", scale_name.trim()),
+                    None,
+                )
+            })?;
+        // Default lead register: above the riff - highest open string up
+        // to +15 frets.
+        let highest_open = tuning.iter().map(|&(_, o)| o).max().unwrap_or(64);
+        let parse_reg = |spec: &Option<String>, default: u8| -> Result<u8, ErrorData> {
+            match spec {
+                Some(s) => tabmcp_theory::parse_note(s).ok_or_else(|| {
+                    ErrorData::invalid_params(format!("bad note name '{s}'"), None)
+                }),
+                None => Ok(default),
+            }
+        };
+        let reg_lo = parse_reg(&p.register_low, highest_open.saturating_sub(10))?;
+        let reg_hi = parse_reg(&p.register_high, highest_open.saturating_add(15))?;
+        let mut plan = tabmcp_theory::lead::LeadPlan::default();
+        if let Some(spec) = &p.contour {
+            let contour: Vec<f64> = spec
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if contour.len() >= 2 {
+                plan.contour = contour;
+            }
+        }
+        if let Some(cap) = p.max_difficulty {
+            plan.max_difficulty = cap.clamp(1.0, 10.0);
+        }
+        let tempo = song
+            .headers
+            .iter()
+            .find(|h| h.number == from)
+            .map(|h| h.tempo_bpm)
+            .unwrap_or(120);
+        let range = self
+            .call_bridge(move |client| client.read_measures(track_number, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let mut measure_lens: Vec<u64> = Vec::new();
+        for i in 0..range.measures.len() {
+            let len = if i + 1 < range.measures.len() {
+                range.measures[i + 1]
+                    .start_tick
+                    .saturating_sub(range.measures[i].start_tick)
+            } else {
+                measure_lens.last().copied().unwrap_or(3840)
+            };
+            measure_lens.push(if len > 0 { len } else { 3840 });
+        }
+        let first_start = range.measures.first().map(|m| m.start_tick).unwrap_or(960);
+        let (mut measures, description) = tabmcp_theory::lead::generate_lead(
+            root_pc,
+            steps,
+            reg_lo,
+            reg_hi,
+            &measure_lens,
+            &plan,
+            &tuning,
+            max_fret,
+            tempo,
+            from,
+            first_start,
+        )
+        .map_err(|e| ErrorData::invalid_params(e, None))?;
+        for (i, measure) in measures.iter_mut().enumerate() {
+            measure.number = from + i as u32;
+        }
+        let notes = count_notes(&measures);
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY - nothing changed. Generated {description} in {} for \
+                     track {track_number} measures {from}-{to} ({notes} notes). To apply, \
+                     call again with confirm=true and expected_revision={}.",
+                    p.scale, range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: Some(notes),
+                notes_after: Some(notes),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track_number, from, &measures, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied {description} to track {track_number} measures {from}-{to}. \
+                 The user can undo with Cmd+Z. Consider tuxguitar_ornament next.",
+            ),
+            revision: result.new_revision,
+            measures_added: Some(result.measures_added),
+            notes_before: Some(notes),
+            notes_after: Some(result.notes_after),
+        }))
+    }
+
+    #[tool(
+        description = "HARMONY PLANNER — plan harmonic motion instead of pedaling one root for a whole song: pass a mood (dark, epic, driving, sad, triumphant, unresolved, lift) or explicit degrees ('1-6-7-1') plus a 7-note scale, get roman numerals, concrete chord roots, per-step voice-leading verdicts (semitone menace, fourth pull, tritone jar...), and a pedal warning when the progression never moves. Read-only: apply it by writing power chords with replace_measures or seeding generate_riff per chord section.",
+        annotations(title = "Plan harmony", read_only_hint = true)
+    )]
+    async fn tuxguitar_plan_harmony(
+        &self,
+        params: Parameters<PlanHarmonyParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let plan = tabmcp_theory::harmony::plan(&p.scale, &p.progression)
+            .map_err(|e| ErrorData::invalid_params(e, None))?;
+        Ok(tabmcp_theory::harmony::describe(
+            &plan,
+            &p.scale,
+            p.bars_per_chord.unwrap_or(2).max(1),
+        ))
+    }
+
+    #[tool(
+        description = "ORNAMENT PASS — decorate existing material the way a player would: vibrato on held fretted notes, slides into phrase starts, pinch squeals on low-string accent peaks, grace hammer-ons into measure entries, and (flavor=tremolo) sustained notes converted to tremolo picking for black/death/surf. Realism-aware (no vibrato on 16ths, no ornaments on open low strings where they make no sense) and deterministic. Run AFTER composing/generating - generated material is articulation-naked without it. TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
+        annotations(title = "Ornament", read_only_hint = false, destructive_hint = true)
+    )]
+    async fn tuxguitar_ornament(
+        &self,
+        params: Parameters<OrnamentParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let flavor = tabmcp_theory::ornament::Flavor::parse(
+            p.flavor.as_deref().unwrap_or("standard"),
+        )
+        .ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!(
+                    "unknown flavor '{}'; available: standard, aggressive, tremolo",
+                    p.flavor.as_deref().unwrap_or("")
+                ),
+                None,
+            )
+        })?;
+        let track = p.track_number;
+        let (from, to) = (p.from_measure, p.to_measure);
+        if from == 0 || to < from || to - from + 1 > MAX_MEASURES_PER_READ {
+            return Err(ErrorData::invalid_params("invalid range", None));
+        }
+        let song = self.fetch_song().await?;
+        let tuning: Vec<(u32, u8)> = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track)
+            .map(|t| {
+                t.strings
+                    .iter()
+                    .map(|s| (s.number, s.open_pitch))
+                    .collect()
+            })
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track} not found"), None)
+            })?;
+        let range = self
+            .call_bridge(move |client| client.read_measures(track, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let mut measures = range.measures;
+        let report = tabmcp_theory::ornament::decorate(&mut measures, &tuning, flavor);
+        let description = tabmcp_theory::ornament::describe(&report);
+        let notes = count_notes(&measures);
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY - nothing changed. {description} in measures \
+                     {from}-{to} of track {track}. To apply, call again with \
+                     confirm=true and expected_revision={}.",
+                    range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: Some(notes),
+                notes_after: Some(notes),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track, from, &measures, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied: {description} (track {track}, measures {from}-{to}). \
+                 The user can undo with Cmd+Z.",
+            ),
+            revision: result.new_revision,
+            measures_added: Some(result.measures_added),
+            notes_before: Some(notes),
+            notes_after: Some(result.notes_after),
+        }))
+    }
+
+    #[tool(
+        description = "TRANSITION ENGINE — make section boundaries sound produced instead of butt-joined: 'fill' rewrites the back half of the drum bar as a snare-tom fill ramping into the next section; 'buildup' converts the whole bar to a densifying snare ramp (8ths -> 16ths, rising velocity - melodic tracks ramp too); 'stop' cuts the band after the downbeat (drums keep one crash+kick, melodic tracks keep the downbeat with letRing). Target one measure (typically the last bar before a marker) or omit measure to transition before EVERY marker at once. TWO-STEP: preview, then confirm=true with expected_revision. One undo per track edit.",
+        annotations(title = "Generate transitions", read_only_hint = false, destructive_hint = true)
+    )]
+    async fn tuxguitar_generate_transitions(
+        &self,
+        params: Parameters<TransitionParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let kind = tabmcp_theory::transitions::TransitionKind::parse(&p.kind)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("unknown kind '{}'; available: fill, buildup, stop", p.kind),
+                    None,
+                )
+            })?;
+        let song = self.fetch_song().await?;
+        let last = song.headers.len() as u32;
+        // Boundary bars: explicit measure, or the bar before every marker.
+        let targets: Vec<u32> = match p.measure {
+            Some(m) if m >= 1 && m <= last => vec![m],
+            Some(m) => {
+                return Err(ErrorData::invalid_params(
+                    format!("measure {m} out of range 1-{last}"),
+                    None,
+                ))
+            }
+            None => {
+                let marks: Vec<u32> = song
+                    .headers
+                    .iter()
+                    .filter(|h| h.marker.is_some() && h.number > 1)
+                    .map(|h| h.number - 1)
+                    .collect();
+                if marks.is_empty() {
+                    return Err(ErrorData::invalid_params(
+                        "no section markers found - set markers first or pass an explicit measure",
+                        None,
+                    ));
+                }
+                marks
+            }
+        };
+        let drum_track = p
+            .drum_track
+            .or_else(|| {
+                song.tracks
+                    .iter()
+                    .find(|t| t.is_percussion)
+                    .map(|t| t.number)
+            })
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    "no percussion track in the score (and no drum_track given)",
+                    None,
+                )
+            })?;
+
+        // Build the rewritten measures per track.
+        struct PendingEdit {
+            track: u32,
+            measure: tabmcp_model::Measure,
+        }
+        let mut edits: Vec<PendingEdit> = Vec::new();
+        for &target in &targets {
+            // Window of two measures so lengths resolve.
+            let from = target;
+            let to = (target + 1).min(last);
+            let drums = self
+                .call_bridge(move |client| client.read_measures(drum_track, from, to))
+                .await
+                .map_err(BridgeCallError::into_error_data)?;
+            let rewritten =
+                tabmcp_theory::transitions::drum_transition(&drums.measures, 0, kind);
+            edits.push(PendingEdit {
+                track: drum_track,
+                measure: rewritten,
+            });
+            if !matches!(kind, tabmcp_theory::transitions::TransitionKind::Fill) {
+                for track in &song.tracks {
+                    if track.is_percussion {
+                        continue;
+                    }
+                    let track_number = track.number;
+                    let range = self
+                        .call_bridge(move |client| {
+                            client.read_measures(track_number, from, to)
+                        })
+                        .await
+                        .map_err(BridgeCallError::into_error_data)?;
+                    if let Some(rewritten) = tabmcp_theory::transitions::melodic_transition(
+                        &range.measures,
+                        0,
+                        kind,
+                    ) {
+                        edits.push(PendingEdit {
+                            track: track_number,
+                            measure: rewritten,
+                        });
+                    }
+                }
+            }
+        }
+        let notes: u32 = edits.iter().map(|e| count_notes(std::slice::from_ref(&e.measure))).sum();
+        let bars: Vec<String> = targets.iter().map(|t| t.to_string()).collect();
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY - nothing changed. Would write a '{}' transition ({}) \
+                     at measure(s) {} across {} track edit(s), {notes} notes total. To \
+                     apply, call again with confirm=true and expected_revision={}.",
+                    p.kind,
+                    kind.describe(),
+                    bars.join(", "),
+                    edits.len(),
+                    song.revision,
+                ),
+                revision: song.revision,
+                measures_added: None,
+                notes_before: None,
+                notes_after: Some(notes),
+            }));
+        }
+        let mut expected = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let mut applied = 0usize;
+        for edit in edits {
+            let track = edit.track;
+            let number = edit.measure.number;
+            let measures = vec![edit.measure];
+            let result = self
+                .call_bridge(move |client| {
+                    client.apply_replace_measures(track, number, &measures, expected)
+                })
+                .await
+                .map_err(BridgeCallError::into_error_data)?;
+            expected = result.new_revision;
+            applied += 1;
+        }
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied '{}' transition at measure(s) {} - {applied} track edit(s). \
+                 Each is one Cmd+Z step.",
+                p.kind,
+                bars.join(", "),
+            ),
+            revision: expected,
+            measures_added: Some(0),
+            notes_before: None,
+            notes_after: Some(notes),
         }))
     }
 
@@ -3625,7 +4348,10 @@ impl TabMcp {
             }
         }
         if boundaries.len() > 1 {
-            out.push_str("\nPer-section groove (whole-range rhythm flags above may just be intentional section contrast — trust these):\n");
+            out.push_str(
+                "\nPer-section metrics (whole-range flags above may just be intentional \
+                 section contrast — trust these). groove/sync/rest%, per track:\n",
+            );
             for (i, (start, label)) in boundaries.iter().enumerate() {
                 let end = boundaries.get(i + 1).map(|(m, _)| m - 1).unwrap_or(to);
                 let mut line = format!("  m{start}-{end} \"{label}\":");
@@ -3641,9 +4367,11 @@ impl TabMcp {
                     }
                     let report = tabmcp_theory::critique::critique(&slice, &input.tuning);
                     line.push_str(&format!(
-                        " T{} {:.0}%",
+                        " T{}[{:.0}/{:.0}/{:.0}]",
                         input.number,
-                        report.groove_consistency * 100.0
+                        report.groove_consistency * 100.0,
+                        report.syncopation * 100.0,
+                        report.rest_share * 100.0,
                     ));
                 }
                 line.push('\n');
@@ -3709,6 +4437,21 @@ impl TabMcp {
                     lo * 100.0,
                     hi * 100.0
                 ));
+                // Development quota: copy-paste fails the style check.
+                let played =
+                    report.literal_repeats + report.varied_repeats + report.fresh_measures;
+                if played > 2 {
+                    let literal_share = report.literal_repeats as f64 / played as f64;
+                    if literal_share > guide.max_literal_share {
+                        out.push_str(&format!(
+                            "  T{number} DEVELOPMENT QUOTA FAILED: {:.0}% of measures are \
+                             literal repeats (style allows {:.0}%) - vary a repeat with \
+                             tuxguitar_vary_riff or tuxguitar_evolve_riff\n",
+                            literal_share * 100.0,
+                            guide.max_literal_share * 100.0,
+                        ));
+                    }
+                }
             }
         }
 
@@ -3834,7 +4577,8 @@ impl TabMcp {
             ));
         }
 
-        // Pass history: session trend across evaluate calls.
+        // Pass history: persisted per documentId so the trend survives
+        // process restarts (the embedded chat spawns one process per turn).
         {
             let mean_groove = if melodic.is_empty() {
                 0.0
@@ -3842,8 +4586,29 @@ impl TabMcp {
                 melodic.iter().map(|r| r.groove_consistency).sum::<f64>() / melodic.len() as f64
             };
             let issues = out.matches("ISSUE:").count();
-            let mut passes = self.passes.lock().unwrap();
+            let history_path = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".tuxguitar-mcp")
+                .join("passes")
+                .join(format!("{}.json", song.document_id));
+            let mut passes: Vec<(f64, usize)> = std::fs::read_to_string(&history_path)
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+                .unwrap_or_default();
             passes.push((mean_groove, issues));
+            if passes.len() > 12 {
+                let excess = passes.len() - 12;
+                passes.drain(..excess);
+            }
+            if let Some(parent) = history_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(text) = serde_json::to_string(&passes) {
+                let _ = std::fs::write(&history_path, text);
+            }
+            {
+                let mut memory = self.passes.lock().unwrap();
+                *memory = passes.clone();
+            }
             if passes.len() > 1 {
                 let grooves: Vec<String> = passes
                     .iter()
@@ -4833,6 +5598,39 @@ impl TabMcp {
         .map_err(|join_error| BridgeCallError {
             message: format!("internal task failure: {join_error}"),
         })?
+    }
+
+    /// Structured hints from player-notes files: lines shaped
+    /// `key = value` with known keys, base file plus tuning-specific
+    /// files (any tuning suffix) all contribute; later files win.
+    fn player_note_hints(style: &str) -> std::collections::HashMap<String, String> {
+        let slug = style.trim().to_ascii_lowercase().replace(' ', "-");
+        let dir = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".tuxguitar-mcp")
+            .join("styles");
+        let mut hints = std::collections::HashMap::new();
+        let mut files: Vec<PathBuf> = vec![dir.join(format!("{slug}.md"))];
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(&format!("{slug}.")) && name.ends_with(".md") {
+                    files.push(entry.path());
+                }
+            }
+        }
+        const KEYS: &[&str] = &["cells", "density", "syncopation", "register", "accents", "phrase"];
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else { continue };
+            for line in text.lines() {
+                if let Some((key, value)) = line.split_once('=') {
+                    let key = key.trim().to_ascii_lowercase();
+                    if KEYS.contains(&key.as_str()) {
+                        hints.insert(key, value.trim().to_string());
+                    }
+                }
+            }
+        }
+        hints
     }
 
     async fn fetch_song(&self) -> Result<Song, ErrorData> {

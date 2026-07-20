@@ -9,12 +9,16 @@ pub mod difficulty;
 pub mod emotion;
 pub mod fingering;
 pub mod generation;
+pub mod harmony;
+pub mod lead;
+pub mod ornament;
 pub mod pitch;
 pub mod realism;
 pub mod search;
 pub mod styles;
 pub mod themes;
 pub mod transforms;
+pub mod transitions;
 
 pub use analysis::{
     detect_scales, explain, melodic_intervals, tonal_center, transpose_measures, NoteEvent,

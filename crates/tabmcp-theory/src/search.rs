@@ -28,6 +28,13 @@ pub struct RiffConstraints {
     pub max_pitch_repeat: usize,
     /// Palm-mute unaccented low notes (chug feel).
     pub palm_mute_low: bool,
+    /// Optional per-measure tension targets 0..1 (stretched over the
+    /// range). High tension pulls density and register up; low tension
+    /// thins the bar and sinks it. Empty = no coupling.
+    pub tension: Vec<f64>,
+    /// Phrase length in measures for cadences (0 = off). The last onset
+    /// of every phrase resolves to the root pitch class.
+    pub phrase_len: usize,
 }
 
 impl Default for RiffConstraints {
@@ -42,6 +49,8 @@ impl Default for RiffConstraints {
             notes_per_measure: (4, 10),
             max_pitch_repeat: 3,
             palm_mute_low: true,
+            tension: Vec::new(),
+            phrase_len: 4,
         }
     }
 }
@@ -185,6 +194,10 @@ struct FlatOnset {
     measure_index: usize,
     spelled: SpelledOnset,
     accented: bool,
+    /// Per-measure tension 0..1 (0.5 when no target set).
+    tension: f64,
+    /// Phrase-final onset: the pitch search resolves these to the root.
+    cadence: bool,
 }
 
 /// Assign pitches to onsets with a beam over the pool: roots on accents,
@@ -223,6 +236,22 @@ fn assign_pitches(onsets: &[FlatOnset], constraints: &RiffConstraints) -> Vec<u8
                     } else {
                         score -= 0.3;
                     }
+                }
+                // Cadence: phrase-final onsets resolve to the root.
+                if onset.cadence {
+                    if pitch % 12 == constraints.root_pc {
+                        score += 3.0;
+                    } else {
+                        score -= 0.5;
+                    }
+                }
+                // Tension pulls the register: high tension wants the top
+                // of the pool, low tension the bottom.
+                {
+                    let lo = *pool.first().unwrap() as f64;
+                    let hi = *pool.last().unwrap() as f64;
+                    let anchor = lo + onset.tension * (hi - lo);
+                    score -= (pitch as f64 - anchor).abs() * 0.035;
                 }
                 if let Some(&prev) = state.pitches.last() {
                     let iv = (pitch as i16 - prev as i16).abs();
@@ -298,6 +327,15 @@ pub fn generate_riff(
     // the final A repeats A (pitch search then varies it via motif echo).
     let mut flat: Vec<FlatOnset> = Vec::new();
     let mut form: Vec<char> = Vec::new();
+    let n = constraints.measure_lens.len();
+    let tension_of = |mi: usize| -> f64 {
+        if constraints.tension.is_empty() {
+            0.5
+        } else {
+            constraints.tension[mi * constraints.tension.len() / n.max(1)]
+                .clamp(0.0, 1.0)
+        }
+    };
     for (mi, &len) in constraints.measure_lens.iter().enumerate() {
         let slot = match mi % 4 {
             2 => 'B',
@@ -305,20 +343,38 @@ pub fn generate_riff(
         };
         form.push(slot);
         let rotation = if slot == 'B' { 3 } else { 0 };
+        let tension = tension_of(mi);
+        // Tension shapes density: high tension pushes the bar toward the
+        // top of the density window, low tension thins it.
+        let (dlo, dhi) = constraints.notes_per_measure;
+        let density_window = if constraints.tension.is_empty() {
+            (dlo, dhi)
+        } else {
+            let mid = dlo as f64 + tension * (dhi - dlo) as f64;
+            (
+                ((mid - 1.0).round() as usize).max(dlo.min(1)),
+                ((mid + 1.5).round() as usize).min(dhi.max(2)),
+            )
+        };
         let onsets = solve_measure(
             len,
             &cells,
             &constraints.accents,
             constraints.syncopation,
-            constraints.notes_per_measure,
+            density_window,
             rotation,
         );
-        for spelled in onsets {
+        let onset_count = onsets.len();
+        let phrase_final_measure =
+            constraints.phrase_len > 0 && (mi + 1) % constraints.phrase_len == 0;
+        for (oi, spelled) in onsets.into_iter().enumerate() {
             let accented = constraints.accents.contains(&spelled.offset);
             flat.push(FlatOnset {
                 measure_index: mi,
                 spelled,
                 accented,
+                tension,
+                cadence: phrase_final_measure && oi + 1 == onset_count,
             });
         }
     }
@@ -481,6 +537,44 @@ mod tests {
             }
             assert!(!m.beats.is_empty());
         }
+    }
+
+    #[test]
+    fn tension_coupling_shapes_density_and_register() {
+        let base = RiffConstraints {
+            pitch_pool: phrygian_dominant_pool(9, 33, 52),
+            root_pc: 9,
+            measure_lens: vec![3840; 4],
+            accents: vec![0],
+            notes_per_measure: (3, 12),
+            tension: vec![0.1, 0.4, 0.7, 1.0],
+            phrase_len: 4,
+            ..RiffConstraints::default()
+        };
+        let (measures, _) =
+            generate_riff(&base, SEVEN_STRING, 24, 1, 960).expect("generates");
+        let open: std::collections::HashMap<u32, u8> =
+            SEVEN_STRING.iter().copied().collect();
+        let stats: Vec<(usize, f64)> = measures
+            .iter()
+            .map(|m| {
+                let pitches: Vec<f64> = m
+                    .beats
+                    .iter()
+                    .flat_map(|b| &b.voices)
+                    .flat_map(|v| &v.notes)
+                    .map(|n| (open[&n.string] + n.fret as u8) as f64)
+                    .collect();
+                let mean = pitches.iter().sum::<f64>() / pitches.len().max(1) as f64;
+                (pitches.len(), mean)
+            })
+            .collect();
+        // Rising tension: the last bar is denser and higher than the first.
+        assert!(stats[3].0 > stats[0].0, "{stats:?}");
+        assert!(stats[3].1 > stats[0].1, "{stats:?}");
+        // Cadence: the final onset lands on the root pitch class.
+        let last = measures[3].beats.last().unwrap().voices[0].notes[0].clone();
+        assert_eq!((open[&last.string] + last.fret as u8) % 12, 9);
     }
 
     #[test]
