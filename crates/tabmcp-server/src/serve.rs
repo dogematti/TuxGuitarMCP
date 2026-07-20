@@ -2065,6 +2065,55 @@ impl TabMcp {
                 measures: range.measures,
             });
         }
+        // Per-section groove (field finding: whole-range rhythm flags fire on
+        // INTENTIONAL contrast between sections/meters). Sections split at
+        // markers and time-signature changes.
+        let mut boundaries: Vec<(u32, String)> = Vec::new();
+        for (i, header) in song.headers.iter().enumerate() {
+            let meter_changed =
+                i > 0 && song.headers[i - 1].time_signature != header.time_signature;
+            if header.number >= from
+                && header.number <= to
+                && (header.marker.is_some() || meter_changed || header.number == from)
+            {
+                let label = header.marker.clone().unwrap_or_else(|| {
+                    format!(
+                        "{}/{}",
+                        header.time_signature.numerator, header.time_signature.denominator
+                    )
+                });
+                if boundaries.last().map(|(m, _)| *m) != Some(header.number) {
+                    boundaries.push((header.number, label));
+                }
+            }
+        }
+        if boundaries.len() > 1 {
+            out.push_str("\nPer-section groove (whole-range rhythm flags above may just be intentional section contrast — trust these):\n");
+            for (i, (start, label)) in boundaries.iter().enumerate() {
+                let end = boundaries.get(i + 1).map(|(m, _)| m - 1).unwrap_or(to);
+                let mut line = format!("  m{start}-{end} \"{label}\":");
+                for input in &inputs {
+                    let slice: Vec<tabmcp_model::Measure> = input
+                        .measures
+                        .iter()
+                        .filter(|m| m.number >= *start && m.number <= end)
+                        .cloned()
+                        .collect();
+                    if slice.iter().all(|m| m.beats.is_empty()) {
+                        continue;
+                    }
+                    let report = tabmcp_theory::critique::critique(&slice, &input.tuning);
+                    line.push_str(&format!(
+                        " T{} {:.0}%",
+                        input.number,
+                        report.groove_consistency * 100.0
+                    ));
+                }
+                line.push('\n');
+                out.push_str(&line);
+            }
+        }
+
         out.push('\n');
         let arrangement = tabmcp_theory::arrangement::analyze_arrangement(&inputs);
         out.push_str(&tabmcp_theory::arrangement::describe(&arrangement));

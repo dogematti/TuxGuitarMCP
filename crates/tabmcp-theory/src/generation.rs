@@ -219,10 +219,29 @@ pub fn generate_bassline(
         pitch
     };
 
+    // Accent thresholds per measure: onsets above the low-anchor register
+    // are melodic/accent notes the bass should FOLLOW, not clash with
+    // (field finding: a root drone under b2 stabs produced 19 clashes).
+    let mut accent_threshold = vec![u8::MAX; source.len()];
+    for onset in &all_onsets {
+        let low = all_onsets
+            .iter()
+            .filter(|o| o.measure_index == onset.measure_index)
+            .map(|o| o.pitch)
+            .min()
+            .unwrap_or(0);
+        accent_threshold[onset.measure_index] = low.saturating_add(2);
+    }
+
     let mut notes: Vec<(usize, u64, Duration, u8, u32)> = Vec::new();
     for (i, onset) in all_onsets.iter().enumerate() {
         let root = roots[onset.measure_index];
         let mut pitch = to_bass_pitch(root);
+        // Mirror accent notes: when the guitar leaves the chug register,
+        // the bass moves to the same pitch class instead of droning the root.
+        if onset.pitch > accent_threshold[onset.measure_index] {
+            pitch = to_bass_pitch(onset.pitch % 12);
+        }
         // Static harmony must not become a one-note drone: walk to the
         // fifth on the second half of the measure when the root persists.
         let root_unchanged = roots
@@ -768,6 +787,62 @@ mod tests {
         assert!(
             pitches.iter().any(|&p| p % 12 == 11),
             "static harmony should walk to the fifth (B over E): {pitches:?}"
+        );
+    }
+
+    #[test]
+    fn bass_follows_accent_notes_instead_of_clashing() {
+        // Chug on A (6,5=A2) with a Bb accent up the neck (4,8=F#?? no:
+        // string 4 open D3=50, fret 8 = 58 = Bb3). Bass must include Bb,
+        // and must NOT play the root A at the accent's onset.
+        let steps: [&[(u32, u32)]; 1] = [&[(6, 5), (6, 5), (4, 8), (6, 5)]];
+        let measures: Vec<Measure> = steps
+            .iter()
+            .enumerate()
+            .map(|(i, frets)| Measure {
+                number: i as u32 + 1,
+                start_tick: 960,
+                key_signature: 0,
+                beats: frets
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &(string, fret))| Beat {
+                        start_tick: 960 + j as u64 * 480,
+                        voices: vec![Voice {
+                            index: 0,
+                            duration: eighth(),
+                            is_rest: false,
+                            notes: vec![Note {
+                                string,
+                                fret,
+                                velocity: 95,
+                                tied: false,
+                                effects: NoteEffects::default(),
+                            }],
+                        }],
+                    })
+                    .collect(),
+            })
+            .collect();
+        let (out, _) = generate_bassline(&measures, STANDARD, BASS, 24).expect("generates");
+        let open: std::collections::HashMap<u32, u8> = BASS.iter().copied().collect();
+        let pitches: Vec<u8> = out
+            .iter()
+            .flat_map(|m| &m.beats)
+            .flat_map(|b| &b.voices)
+            .flat_map(|v| &v.notes)
+            .map(|n| open[&n.string] + n.fret as u8)
+            .collect();
+        // Third onset (the Bb3 accent) must be a Bb-class bass note.
+        assert_eq!(
+            pitches[2] % 12,
+            10,
+            "bass must mirror the Bb accent: {pitches:?}"
+        );
+        assert_eq!(
+            pitches[0] % 12,
+            9,
+            "chug onsets stay on the root A: {pitches:?}"
         );
     }
 
