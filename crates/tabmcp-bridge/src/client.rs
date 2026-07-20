@@ -215,6 +215,11 @@ impl BridgeClient {
         self.call("export_song", &json!({ "format": format }))
     }
 
+    /// Headless MIDI render to the bridge's fixed scratch path.
+    pub fn render_midi(&mut self) -> Result<serde_json::Value, BridgeError> {
+        self.call("render_midi", &json!({}))
+    }
+
     pub fn play(&mut self) -> Result<serde_json::Value, BridgeError> {
         self.call("play", &json!({}))
     }

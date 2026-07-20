@@ -178,6 +178,8 @@ public class McpSocketServer {
 				return this.service.setTempo(params);
 			case "export_song":
 				return this.service.exportSong(params);
+			case "render_midi":
+				return this.service.renderMidi();
 			case "play":
 				return this.service.play();
 			case "stop":

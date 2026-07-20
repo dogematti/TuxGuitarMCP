@@ -35,7 +35,7 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.4.2";
+	public static final String PLUGIN_VERSION = "0.5.0";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 
@@ -469,6 +469,80 @@ public class BridgeService {
 		JsonObject result = new JsonObject();
 		result.addProperty("dialogOpened", true);
 		result.addProperty("format", found.getName());
+		return result;
+	}
+
+	/**
+	 * Headless MIDI render to a FIXED scratch path (~/.tuxguitar-mcp/render.mid)
+	 * — no dialogs, no wire-supplied paths. Powers the audio feedback loop.
+	 */
+	public JsonObject renderMidi() throws RpcException {
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		final TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+
+		app.tuxguitar.io.base.TGFileFormatManager formatManager =
+			app.tuxguitar.io.base.TGFileFormatManager.getInstance(this.context);
+		app.tuxguitar.io.base.TGFileFormat midi = null;
+		for (app.tuxguitar.io.base.TGSongWriter writer : formatManager.findSongWriters(false)) {
+			for (String extension : writer.getFileFormat().getSupportedFormats()) {
+				if ("mid".equalsIgnoreCase(extension)) {
+					midi = writer.getFileFormat();
+				}
+			}
+		}
+		if (midi == null) {
+			throw new RpcException(RpcException.UNSUPPORTED, "no MIDI writer installed");
+		}
+
+		java.nio.file.Path path = java.nio.file.Paths.get(
+			System.getProperty("user.home"), ".tuxguitar-mcp", "render.mid");
+		final app.tuxguitar.io.base.TGFileFormat format = midi;
+		final AtomicReference<Exception> errorRef = new AtomicReference<>();
+		try {
+			java.nio.file.Files.createDirectories(path.getParent());
+			final java.io.OutputStream out = java.nio.file.Files.newOutputStream(path);
+			try {
+				final app.tuxguitar.song.managers.TGSongManager songManager =
+					documentManager.getSongManager();
+				TGEditorManager.getInstance(this.context).runLocked(new Runnable() {
+					public void run() {
+						try {
+							app.tuxguitar.io.base.TGSongWriterHandle handle =
+								new app.tuxguitar.io.base.TGSongWriterHandle();
+							handle.setFactory(songManager.getFactory());
+							handle.setSong(song);
+							handle.setFormat(format);
+							handle.setOutputStream(out);
+							handle.setContext(new app.tuxguitar.io.base.TGSongStreamContext());
+							app.tuxguitar.io.base.TGFileFormatManager
+								.getInstance(BridgeService.this.context).write(handle);
+						} catch (Exception e) {
+							errorRef.set(e);
+						}
+					}
+				});
+			} finally {
+				out.close();
+			}
+		} catch (java.io.IOException e) {
+			throw new RpcException(RpcException.INTERNAL, "cannot write render file: " + e.getMessage());
+		}
+		if (errorRef.get() != null) {
+			throw new RpcException(RpcException.INTERNAL,
+				"MIDI write failed: " + errorRef.get().getMessage());
+		}
+		long size;
+		try {
+			size = java.nio.file.Files.size(path);
+		} catch (java.io.IOException e) {
+			size = -1;
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("path", path.toString());
+		result.addProperty("bytes", size);
 		return result;
 	}
 

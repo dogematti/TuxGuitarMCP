@@ -1225,6 +1225,122 @@ impl TabMcp {
     }
 
     #[tool(
+        description = "The 'virtual ear', audio edition: render the WHOLE song through TuxGuitar's own soundfont (headless MIDI -> fluidsynth -> WAV) and analyze the actual audio — true loudness, clipping, spectral balance (low-end mud / darkness), and quiet holes. Slower than tuxguitar_analyze_arrangement (use that for note-level issues); use this to hear the MIX. Requires fluidsynth (brew install fluid-synth). The WAV is kept at ~/.tuxguitar-mcp/render.wav for the user to play.",
+        annotations(title = "Render & listen", read_only_hint = true)
+    )]
+    async fn tuxguitar_render_and_listen(&self) -> Result<String, ErrorData> {
+        // 1. Headless MIDI from the bridge (fixed scratch path, no dialogs).
+        let midi = self
+            .call_bridge(|client| client.render_midi())
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let midi_path = midi
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ErrorData::internal_error("bridge returned no render path", None))?
+            .to_string();
+
+        // 2. Locate fluidsynth and a soundfont (user override first, then the
+        //    one TuxGuitar itself ships, so it sounds like the app's playback).
+        let fluidsynth = [
+            "/opt/homebrew/bin/fluidsynth",
+            "/usr/local/bin/fluidsynth",
+            "fluidsynth",
+        ]
+        .iter()
+        .find(|candidate| {
+            std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok()
+        })
+        .ok_or_else(|| {
+            ErrorData::internal_error(
+                "fluidsynth not found — install it with: brew install fluid-synth",
+                None,
+            )
+        })?;
+        let home = std::env::var("HOME").unwrap_or_default();
+        let override_font = PathBuf::from(&home).join(".tuxguitar-mcp/soundfont.sf2");
+        let soundfont = if override_font.exists() {
+            override_font
+        } else {
+            let mut found = None;
+            if let Ok(apps) = std::fs::read_dir("/Applications") {
+                for app in apps.flatten() {
+                    if app
+                        .file_name()
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains("tuxguitar")
+                    {
+                        let candidate = app
+                            .path()
+                            .join("Contents/MacOS/share/soundfont/MagicSFver2.sf2");
+                        if candidate.exists() {
+                            found = Some(candidate);
+                        }
+                    }
+                }
+            }
+            found.ok_or_else(|| {
+                ErrorData::internal_error(
+                    "no soundfont found — place a GM .sf2 at ~/.tuxguitar-mcp/soundfont.sf2",
+                    None,
+                )
+            })?
+        };
+
+        // 3. Render to WAV.
+        let wav_path = PathBuf::from(&home).join(".tuxguitar-mcp/render.wav");
+        let output = tokio::task::spawn_blocking({
+            let fluidsynth = fluidsynth.to_string();
+            let soundfont = soundfont.clone();
+            let midi_path = midi_path.clone();
+            let wav_path = wav_path.clone();
+            move || {
+                std::process::Command::new(fluidsynth)
+                    .args(["-ni", "-r", "44100", "-F"])
+                    .arg(&wav_path)
+                    .arg(&soundfont)
+                    .arg(&midi_path)
+                    .output()
+            }
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("render task failed: {e}"), None))?
+        .map_err(|e| ErrorData::internal_error(format!("fluidsynth failed to start: {e}"), None))?;
+        if !output.status.success() || !wav_path.exists() {
+            return Err(ErrorData::internal_error(
+                format!(
+                    "fluidsynth render failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                        .chars()
+                        .take(300)
+                        .collect::<String>()
+                ),
+                None,
+            ));
+        }
+
+        // 4. Listen.
+        let report = tokio::task::spawn_blocking({
+            let wav_path = wav_path.clone();
+            move || crate::audio::analyze_wav(&wav_path)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("analysis task failed: {e}"), None))?
+        .map_err(|e| ErrorData::internal_error(e, None))?;
+
+        Ok(format!(
+            "{}\nRendered with TuxGuitar's soundfont ({}).\nAudio kept at {} — the user can play it.",
+            crate::audio::describe(&report),
+            soundfont.file_name().and_then(|n| n.to_str()).unwrap_or("sf2"),
+            wav_path.display(),
+        ))
+    }
+
+    #[tool(
         description = "The 'virtual ear': listen to the whole arrangement the way a producer reads a session. Analyzes ALL tracks together over a measure range (default: whole song, max 32 measures) and reports harsh cross-track dissonances (minor 2nds / tritones at exact measure+tick), register overlaps that cause masking, rhythmic tightness between parts, empty/sparse measures, and velocity balance. Use it after composing/generating to hear problems, then fix them with the edit tools.",
         annotations(title = "Analyze arrangement", read_only_hint = true)
     )]

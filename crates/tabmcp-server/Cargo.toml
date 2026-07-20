@@ -19,3 +19,5 @@ rmcp = { version = "2.2", features = ["transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde = { workspace = true, features = ["derive"] }
 schemars = "1"
+hound = "3"
+rustfft = "6"
