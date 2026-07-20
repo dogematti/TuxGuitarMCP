@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "tuxguitar": {
+      "command": "/Users/anon/.cargo/bin/tabmcp",
+      "args": [
+        "serve"
+      ]
+    }
+  }
+}

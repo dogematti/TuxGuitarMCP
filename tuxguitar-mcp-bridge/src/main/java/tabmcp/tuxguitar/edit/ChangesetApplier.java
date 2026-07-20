@@ -231,9 +231,12 @@ public class ChangesetApplier {
 		effect.setGhostNote(flag(wire, "ghostNote"));
 		effect.setAccentuatedNote(flag(wire, "accent"));
 		effect.setHeavyAccentuatedNote(flag(wire, "heavyAccent"));
-		effect.setPalmMute(flag(wire, "palmMute"));
-		effect.setStaccato(flag(wire, "staccato"));
+		// TuxGuitar makes palmMute/staccato/letRing mutually exclusive (each
+		// setter clears the others). Apply in fixed precedence so the result
+		// is deterministic: palmMute > staccato > letRing.
 		effect.setLetRing(flag(wire, "letRing"));
+		effect.setStaccato(flag(wire, "staccato"));
+		effect.setPalmMute(flag(wire, "palmMute"));
 		effect.setTapping(flag(wire, "tapping"));
 		effect.setSlapping(flag(wire, "slapping"));
 		effect.setPopping(flag(wire, "popping"));

@@ -822,7 +822,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "Write tablature into the open score: replace a measure range on one track with new measures (notes as string+fret; measures past the end of the song are appended automatically). Effects per note: booleans (palmMute, vibrato, slide, hammer, letRing, staccato, deadNote, ...) plus parameterized harmonic {type: natural|artificial|tapped|pinch|semi} and bend {points: [{position 0-12, value in semitones}]} (empty points = standard full-tone bend). TWO-STEP SAFETY: call without confirm to get a preview and revision, then call again with confirm=true and expected_revision to apply. The edit is atomic and undoable with Cmd+Z.",
+        description = "Write tablature into the open score: replace a measure range on one track with new measures (notes as string+fret; measures past the end of the song are appended automatically). Effects per note: booleans (palmMute, vibrato, slide, hammer, letRing, staccato, deadNote, ...) plus parameterized harmonic {type: natural|artificial|tapped|pinch|semi} and bend {points: [{position 0-12, value in semitones}]} (empty points = standard full-tone bend). NOTE: palmMute, staccato and letRing are MUTUALLY EXCLUSIVE in TuxGuitar; if several are set, precedence is palmMute > staccato > letRing. TWO-STEP SAFETY: call without confirm to get a preview and revision, then call again with confirm=true and expected_revision to apply. The edit is atomic and undoable with Cmd+Z.",
         annotations(
             title = "Replace measures",
             read_only_hint = false,
