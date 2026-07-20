@@ -49,6 +49,9 @@ const SCALES: &[(&str, &[u8])] = &[
     ("hungarian minor", &[0, 2, 3, 6, 7, 8, 11]),
     ("double harmonic", &[0, 1, 4, 5, 7, 8, 11]),
     ("half-whole diminished", &[0, 1, 3, 4, 6, 7, 9, 10]),
+    ("whole tone", &[0, 2, 4, 6, 8, 10]),
+    ("altered", &[0, 1, 3, 4, 6, 8, 10]),
+    ("lydian dominant", &[0, 2, 4, 6, 7, 9, 10]),
 ];
 
 /// Duration-weighted pitch-class histogram, normalized to sum 1.
