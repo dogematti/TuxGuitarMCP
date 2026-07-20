@@ -143,12 +143,19 @@ impl BridgeClient {
     }
 
     /// Create a new track; `strings` are open pitches, string 1 first.
+    /// `clef` is "treble" (default) or "bass".
     pub fn create_track(
         &mut self,
         name: &str,
         strings: &[StringTuning],
+        clef: Option<&str>,
     ) -> Result<serde_json::Value, BridgeError> {
-        self.call("create_track", &json!({ "name": name, "strings": strings }))
+        let mut params = json!({ "name": name, "strings": strings });
+        if let Some(clef) = clef {
+            params["clef"] = json!(clef); // omit entirely when unset: the
+                                          // bridge treats JSON null as absent-hostile
+        }
+        self.call("create_track", &params)
     }
 
     pub fn change_tuning(

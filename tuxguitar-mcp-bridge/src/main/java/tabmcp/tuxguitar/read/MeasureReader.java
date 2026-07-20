@@ -42,6 +42,7 @@ public class MeasureReader {
 	private JsonObject measure(TGMeasure measure) {
 		JsonObject dto = new JsonObject();
 		dto.addProperty("number", measure.getNumber());
+		dto.addProperty("startTick", measure.getStart());
 		dto.addProperty("keySignature", measure.getKeySignature());
 		JsonArray beats = new JsonArray();
 		for (TGBeat beat : measure.getBeats()) {

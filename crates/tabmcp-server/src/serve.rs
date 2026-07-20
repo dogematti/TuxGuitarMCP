@@ -273,6 +273,9 @@ struct CreateTrackParams {
     /// "4-string bass", "5-string bass".
     #[serde(default)]
     preset: Option<String>,
+    /// Notation clef: "treble" (default) or "bass".
+    #[serde(default)]
+    clef: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1077,8 +1080,9 @@ impl TabMcp {
         let strings = resolve_tuning(&p.tuning, &p.preset)?;
         let names = tuning_names(&strings);
         let name = p.name.clone();
+        let clef = p.clef.clone();
         let result = self
-            .call_bridge(move |client| client.create_track(&name, &strings))
+            .call_bridge(move |client| client.create_track(&name, &strings, clef.as_deref()))
             .await
             .map_err(BridgeCallError::into_error_data)?;
         let track_number = result
@@ -1315,7 +1319,7 @@ impl TabMcp {
             .map(|(i, &pitch)| (i as u32 + 1, pitch))
             .collect();
         let interval = p.interval.clone().unwrap_or_else(|| "third".into());
-        let (new_track_name, target_strings, generated, description) = match kind {
+        let (new_track_name, target_strings, generated, description, clef) = match kind {
             GenerateKind::Bassline => {
                 let (measures, description) = tabmcp_theory::generation::generate_bassline(
                     &range.measures,
@@ -1328,7 +1332,13 @@ impl TabMcp {
                     .iter()
                     .map(|&(number, open_pitch)| tabmcp_model::StringTuning { number, open_pitch })
                     .collect();
-                ("Bass (AI)".to_string(), strings, measures, description)
+                (
+                    "Bass (AI)".to_string(),
+                    strings,
+                    measures,
+                    description,
+                    Some("bass"),
+                )
             }
             GenerateKind::Harmony => {
                 let (measures, description) = tabmcp_theory::generation::generate_harmony(
@@ -1344,6 +1354,7 @@ impl TabMcp {
                     strings,
                     measures,
                     description,
+                    None::<&str>,
                 )
             }
         };
@@ -1391,7 +1402,7 @@ impl TabMcp {
 
         let name_for_create = new_track_name.clone();
         let created = self
-            .call_bridge(move |client| client.create_track(&name_for_create, &target_strings))
+            .call_bridge(move |client| client.create_track(&name_for_create, &target_strings, clef))
             .await
             .map_err(BridgeCallError::into_error_data)?;
         let new_track = created

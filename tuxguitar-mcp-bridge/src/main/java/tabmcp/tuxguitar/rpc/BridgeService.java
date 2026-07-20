@@ -35,7 +35,7 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.4.1";
+	public static final String PLUGIN_VERSION = "0.4.2";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 
@@ -281,6 +281,30 @@ public class BridgeService {
 		if (strings != null && strings.size() > 0) {
 			this.runChangeTuning(track, strings);
 		}
+
+		// Normalize appearance: TGSongManager.addTrack hard-codes RED as the
+		// track color (drawn as red staff lines); use black. Optionally set
+		// a bass clef so low tunings don't dangle below a treble staff.
+		final String clef = (params.has("clef") && !params.get("clef").isJsonNull())
+			? params.get("clef").getAsString() : null;
+		final TGTrack createdTrack = track;
+		TGEditorManager editor = TGEditorManager.getInstance(this.context);
+		editor.runLocked(new Runnable() {
+			public void run() {
+				createdTrack.getColor().setR(0);
+				createdTrack.getColor().setG(0);
+				createdTrack.getColor().setB(0);
+				if ("bass".equals(clef)) {
+					for (int i = 0; i < createdTrack.countMeasures(); i++) {
+						createdTrack.getMeasure(i).setClef(
+							app.tuxguitar.song.models.TGMeasure.CLEF_BASS);
+					}
+				}
+			}
+		});
+		editor.updateSong();
+		editor.redraw();
+
 		final AtomicReference<Integer> trackNumberRef = new AtomicReference<>(track.getNumber());
 		JsonObject result = new JsonObject();
 		result.addProperty("trackNumber", trackNumberRef.get());

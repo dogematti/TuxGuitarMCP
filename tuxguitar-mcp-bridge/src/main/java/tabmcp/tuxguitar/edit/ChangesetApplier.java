@@ -65,6 +65,34 @@ public class ChangesetApplier {
 					+ existingCount + " measures");
 		}
 
+		// Validate every beat offset BEFORE mutating anything, so a bad
+		// change-set is rejected atomically instead of half-applied.
+		long defaultLength = track.getMeasure(existingCount - 1).getLength();
+		for (int i = 0; i < measures.size(); i++) {
+			int number = fromMeasure + i;
+			long length = (number <= existingCount)
+				? track.getMeasure(number - 1).getLength() : defaultLength;
+			JsonObject wireMeasure = measures.get(i).getAsJsonObject();
+			long wireStart = wireMeasure.has("startTick")
+				? wireMeasure.get("startTick").getAsLong() : 0L;
+			JsonArray wireBeats = wireMeasure.getAsJsonArray("beats");
+			if (wireBeats == null) {
+				continue;
+			}
+			for (JsonElement beatElement : wireBeats) {
+				JsonObject wireBeat = beatElement.getAsJsonObject();
+				long beatTick = wireBeat.has("startTick")
+					? wireBeat.get("startTick").getAsLong() : wireStart;
+				long offset = Math.max(0, beatTick - wireStart);
+				if (offset >= length) {
+					throw new RpcException(RpcException.INVALID_RANGE,
+						"beat offset " + offset + " falls outside measure " + number
+							+ " (length " + length + " ticks) — beat startTicks must be "
+							+ "relative to the measure's startTick");
+				}
+			}
+		}
+
 		ReversibleComposite composite = new ReversibleComposite();
 		Outcome outcome = new Outcome();
 
@@ -111,10 +139,20 @@ public class ChangesetApplier {
 		// Build beats directly on the model, the same way TuxGuitar's own
 		// .tg reader does (TGSongReaderImpl): TGMeasureManager.addNote needs
 		// a pre-existing beat at the position, which a cleared measure lacks.
+		long measureLength = measure.getLength();
 		for (JsonElement beatElement : beats) {
 			JsonObject wireBeat = beatElement.getAsJsonObject();
 			long beatTick = wireBeat.has("startTick") ? wireBeat.get("startTick").getAsLong() : wireStart;
-			long start = actualStart + Math.max(0, beatTick - wireStart);
+			long offset = Math.max(0, beatTick - wireStart);
+			if (offset >= measureLength) {
+				// Out-of-measure beats are a protocol error (e.g. absolute
+				// ticks sent against a measure whose startTick was omitted):
+				// refuse loudly instead of writing invisible notes.
+				throw new IllegalArgumentException(
+					"beat offset " + offset + " falls outside measure "
+						+ measure.getNumber() + " (length " + measureLength + " ticks)");
+			}
+			long start = actualStart + offset;
 
 			JsonArray voices = wireBeat.getAsJsonArray("voices");
 			if (voices == null) {
