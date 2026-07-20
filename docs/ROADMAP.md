@@ -28,7 +28,7 @@ can write expressive tablature, not just note grids.
 - `generate_harmony_track`: diatonic 3rds/6ths harmony of a monophonic lead,
   written to a new track (uses the fingering optimizer for playability).
 - `generate_drum_part`: kick/snare mapped to the guitar accents (percussion
-  channel), basic rock/metal templates.
+  channel), basic rock/metal templates. ✅ shipped as tuxguitar_generate_drums
 - All generation lands behind the existing preview -> confirm -> undo flow.
 
 ## Phase 9 — Fingering, deeper
