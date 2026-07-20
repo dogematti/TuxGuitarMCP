@@ -178,6 +178,24 @@ impl BridgeClient {
         )
     }
 
+    /// Set repeat signs: open at `from_measure`, close at `to_measure` with
+    /// the given repeat count (0 clears the repeat).
+    pub fn set_repeat(
+        &mut self,
+        from_measure: u32,
+        to_measure: u32,
+        repetitions: u32,
+    ) -> Result<serde_json::Value, BridgeError> {
+        self.call(
+            "set_repeat",
+            &json!({
+                "fromMeasure": from_measure,
+                "toMeasure": to_measure,
+                "repetitions": repetitions,
+            }),
+        )
+    }
+
     pub fn play(&mut self) -> Result<serde_json::Value, BridgeError> {
         self.call("play", &json!({}))
     }

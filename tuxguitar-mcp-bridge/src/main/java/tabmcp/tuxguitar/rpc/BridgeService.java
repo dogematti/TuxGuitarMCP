@@ -379,6 +379,54 @@ public class BridgeService {
 		tuning.processOnCurrentThread();
 	}
 
+	public JsonObject setRepeat(JsonObject params) throws RpcException {
+		int from = params.has("fromMeasure") ? params.get("fromMeasure").getAsInt() : 1;
+		int to = params.has("toMeasure") ? params.get("toMeasure").getAsInt() : from;
+		int repetitions = params.has("repetitions") ? params.get("repetitions").getAsInt() : 2;
+
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		app.tuxguitar.song.models.TGMeasureHeader fromHeader = null;
+		app.tuxguitar.song.models.TGMeasureHeader toHeader = null;
+		java.util.Iterator<app.tuxguitar.song.models.TGMeasureHeader> it = song.getMeasureHeaders();
+		while (it.hasNext()) {
+			app.tuxguitar.song.models.TGMeasureHeader header = it.next();
+			if (header.getNumber() == from) {
+				fromHeader = header;
+			}
+			if (header.getNumber() == to) {
+				toHeader = header;
+			}
+		}
+		if (fromHeader == null || toHeader == null || to < from || repetitions < 0) {
+			throw new RpcException(RpcException.INVALID_RANGE,
+				"invalid repeat range " + from + "-" + to);
+		}
+
+		// action.insert.open-repeat TOGGLES: only fire when the state differs.
+		// Both actions carry undo controllers in the app's action config.
+		if (fromHeader.isRepeatOpen() == (repetitions == 0)) {
+			app.tuxguitar.editor.action.TGActionProcessor open =
+				new app.tuxguitar.editor.action.TGActionProcessor(this.context, "action.insert.open-repeat");
+			open.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_SONG, song);
+			open.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_HEADER, fromHeader);
+			open.processOnCurrentThread();
+		}
+		app.tuxguitar.editor.action.TGActionProcessor close =
+			new app.tuxguitar.editor.action.TGActionProcessor(this.context, "action.insert.close-repeat");
+		close.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_SONG, song);
+		close.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_HEADER, toHeader);
+		close.setAttribute("repeatCount", Integer.valueOf(repetitions));
+		close.processOnCurrentThread();
+
+		JsonObject result = new JsonObject();
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
+		return result;
+	}
+
 	public JsonObject play() throws RpcException {
 		new app.tuxguitar.editor.action.TGActionProcessor(
 			this.context, "action.transport.play").processOnCurrentThread();

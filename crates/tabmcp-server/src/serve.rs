@@ -260,6 +260,17 @@ struct GenerateParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct SetRepeatParams {
+    /// Measure where the repeat opens (1-based).
+    from_measure: u32,
+    /// Measure where the repeat closes (inclusive).
+    to_measure: u32,
+    /// How many times the range repeats (default 2). 0 clears the repeat.
+    #[serde(default)]
+    repetitions: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct CreateTrackParams {
     /// Track name shown in TuxGuitar (e.g. "7-String Rhythm").
     name: String,
@@ -1193,6 +1204,38 @@ impl TabMcp {
             notes_before: None,
             notes_after: None,
         }))
+    }
+
+    #[tool(
+        description = "Set repeat signs so a measure range loops during playback (and in MIDI export): repeat-open at from_measure, repeat-close at to_measure with the given repeat count. repetitions=0 clears the repeat. Undoable.",
+        annotations(
+            title = "Set repeat/loop",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_set_repeat(
+        &self,
+        params: Parameters<SetRepeatParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let repetitions = p.repetitions.unwrap_or(2);
+        self.call_bridge(move |client| {
+            client.set_repeat(p.from_measure, p.to_measure, repetitions)
+        })
+        .await
+        .map_err(BridgeCallError::into_error_data)?;
+        Ok(if repetitions == 0 {
+            format!(
+                "Repeat cleared on measures {}-{}.",
+                p.from_measure, p.to_measure
+            )
+        } else {
+            format!(
+                "Measures {}-{} now repeat {} time(s) during playback — press play to loop.",
+                p.from_measure, p.to_measure, repetitions
+            )
+        })
     }
 
     #[tool(
