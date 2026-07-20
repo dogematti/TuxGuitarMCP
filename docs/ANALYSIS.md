@@ -194,23 +194,30 @@ one. The remaining complexity lives BETWEEN riffs. Build order:
 Deliberately not next: more styles (depth over breadth), micro-timing
 (grid cannot hold it), audio-to-tab stage 2 (research-sized).
 
-## 6. What remains, prioritized (older list)
+## 6. Current remaining board (after the arrangement layer + field round 4)
 
-Near (mechanical): revision-bump coalescing (Java events); tremolo-bar
-curves on write (grace/trill/tremolo-picking shipped in 0.8.0);
-per-section evaluate for ALL metrics (currently groove only);
-technique-budget enforcement (idea 7); generator reason lines (idea 9);
-DNA-bank-driven generation bias (feed saved cards into generate_riff
-constraints).
+Field round 4 (2026-07-20, late evening): the full arrangement pipeline
+was driven end-to-end against live TuxGuitar by a scripted client - 33
+calls, zero tool failures (driver: scratchpad/field_pipeline.py in the
+session workspace). Findings shipped immediately: evaluate skips empty
+tracks; apply_harmony (write a planned progression as power chords);
+generate_riff dna= recall of saved DNA-bank cards. 58 tools.
 
-Middle (design): riff genealogy (named checkpoints and branch trees, idea
-11); chord-progression planner (name a progression, get voicings per
-style plus a voice-leading check); solo scaffolding (contour plan + lick
-cells + the fingering optimizer); A/B render compare with a diff report.
+Near (small): technique-budget enforcement (evaluate checks the measured
+technique mix against a target); generator reason lines (per-decision
+"why" like the fingering explainer); arpeggiator transform (chord ->
+picked pattern); revision-bump coalescing (Java events); tremolo-bar
+curves on write.
 
-Far (research): audio-to-tab Stage 2 (Demucs + basic-pitch); headless
-.tg engine; MCP resources/elicitation; TuxGuitar 2.1 migration; true
-multi-agent band simulation with independent model instances per role.
+Middle (a session each): riff genealogy (named checkpoints and branch
+trees); A/B render compare (audio-side diff between renders); groove
+feel templates (systematic velocity push/pull).
+
+Far (research): true multi-agent band simulation (independent model
+instances per role - the embedded chat's process machinery could host
+it); headless .tg engine; audio-to-tab Stage 2 (Demucs + basic-pitch);
+TabBench (formalize the battles into a public eval); TuxGuitar 2.1
+migration.
 
 Explicitly parked by user: loop-practice transport, distribution
 packaging, live audience simulation.
