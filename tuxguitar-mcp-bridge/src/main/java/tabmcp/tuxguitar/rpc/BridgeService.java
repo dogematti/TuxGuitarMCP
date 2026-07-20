@@ -35,7 +35,7 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.5.0";
+	public static final String PLUGIN_VERSION = "0.5.1";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 
@@ -591,6 +591,39 @@ public class BridgeService {
 
 		JsonObject result = new JsonObject();
 		result.addProperty("newRevision", this.revisionTracker.getRevision());
+		return result;
+	}
+
+	/** Move the playback position/caret to a measure, then start playback. */
+	public JsonObject playFrom(JsonObject params) throws RpcException {
+		final int measure = params.has("measure") ? params.get("measure").getAsInt() : 1;
+		TGSong song = TGDocumentManager.getInstance(this.context).getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		app.tuxguitar.song.models.TGMeasureHeader found = null;
+		java.util.Iterator<app.tuxguitar.song.models.TGMeasureHeader> it = song.getMeasureHeaders();
+		while (it.hasNext()) {
+			app.tuxguitar.song.models.TGMeasureHeader header = it.next();
+			if (header.getNumber() == measure) {
+				found = header;
+			}
+		}
+		if (found == null) {
+			throw new RpcException(RpcException.INVALID_RANGE, "measure " + measure + " not found");
+		}
+		final app.tuxguitar.song.models.TGMeasureHeader header = found;
+		this.runOnUiThread(new Runnable() {
+			public void run() {
+				app.tuxguitar.app.transport.TGTransport
+					.getInstance(BridgeService.this.context).gotoMeasure(header, true);
+			}
+		});
+		new app.tuxguitar.editor.action.TGActionProcessor(
+			this.context, "action.transport.play").processOnCurrentThread();
+		JsonObject result = new JsonObject();
+		result.addProperty("fromMeasure", measure);
+		result.addProperty("playing", true);
 		return result;
 	}
 

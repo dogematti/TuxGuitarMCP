@@ -182,6 +182,8 @@ public class McpSocketServer {
 				return this.service.renderMidi();
 			case "play":
 				return this.service.play();
+			case "play_from":
+				return this.service.playFrom(params);
 			case "stop":
 				return this.service.stopPlayback();
 			case "save_copy":

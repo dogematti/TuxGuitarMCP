@@ -223,6 +223,206 @@ pub fn path_cost(path: &[Position]) -> f64 {
     path_cost_with(path, &CostModel::default())
 }
 
+/// One moment in a passage: a single pitch or a chord of pitches.
+#[derive(Debug, Clone)]
+pub enum Step {
+    Mono(u8),
+    /// Pitches sorted ascending; result positions align to this order.
+    Chord(Vec<u8>),
+}
+
+/// Result of optimizing a mixed mono/chord passage: one position set per
+/// step, aligned to the step's pitch order.
+#[derive(Debug, Clone)]
+pub struct StepsResult {
+    pub path: Vec<Vec<Position>>,
+    pub cost: f64,
+}
+
+/// Fretted-hand "center" of a position set (open strings excluded).
+fn centroid(set: &[Position]) -> (f64, f64) {
+    let fretted: Vec<&Position> = set.iter().filter(|p| p.fret > 0).collect();
+    if fretted.is_empty() {
+        let avg_string =
+            set.iter().map(|p| p.string_number as f64).sum::<f64>() / set.len().max(1) as f64;
+        return (0.0, avg_string);
+    }
+    (
+        fretted.iter().map(|p| p.fret as f64).sum::<f64>() / fretted.len() as f64,
+        fretted.iter().map(|p| p.string_number as f64).sum::<f64>() / fretted.len() as f64,
+    )
+}
+
+fn set_transition_cost(model: &CostModel, a: &[Position], b: &[Position]) -> f64 {
+    let (fret_a, string_a) = centroid(a);
+    let (fret_b, string_b) = centroid(b);
+    if fret_a == 0.0 || fret_b == 0.0 {
+        return model.open_transition * (string_a - string_b).abs();
+    }
+    let fret_move = (fret_a - fret_b).abs();
+    let mut cost = model.fret_move * fret_move + model.string_move * (string_a - string_b).abs();
+    if fret_move > model.stretch_span as f64 {
+        cost += model.position_shift;
+    }
+    cost
+}
+
+fn set_node_cost(model: &CostModel, set: &[Position]) -> f64 {
+    let base: f64 = set.iter().map(|&p| model.node_cost(p)).sum();
+    let fretted: Vec<u32> = set.iter().filter(|p| p.fret > 0).map(|p| p.fret).collect();
+    let span = match (fretted.iter().max(), fretted.iter().min()) {
+        (Some(max), Some(min)) => (max - min) as f64,
+        _ => 0.0,
+    };
+    // Wide chord voicings hurt: charge for stretch beyond 3 frets.
+    base + if span > 3.0 { (span - 3.0) * 1.5 } else { 0.0 }
+}
+
+/// All playable voicings for a chord (pitches ascending), positions aligned
+/// to the pitch order, capped to the `limit` cheapest by node cost.
+fn chord_voicings(
+    pitches: &[u8],
+    tuning: Tuning,
+    max_fret: u32,
+    model: &CostModel,
+    limit: usize,
+) -> Vec<Vec<Position>> {
+    #[allow(clippy::too_many_arguments)] // recursion carries its whole state
+    fn assign(
+        pitches: &[u8],
+        index: usize,
+        tuning: Tuning,
+        max_fret: u32,
+        model: &CostModel,
+        used: &mut Vec<u32>,
+        current: &mut Vec<Position>,
+        out: &mut Vec<Vec<Position>>,
+    ) {
+        if index == pitches.len() {
+            out.push(current.clone());
+            return;
+        }
+        for candidate in model.candidates(pitches[index], tuning, max_fret) {
+            if used.contains(&candidate.string_number) {
+                continue;
+            }
+            // Prune impossible stretches early.
+            let fretted: Vec<u32> = current
+                .iter()
+                .chain(std::iter::once(&candidate))
+                .filter(|p| p.fret > 0)
+                .map(|p| p.fret)
+                .collect();
+            if let (Some(&max), Some(&min)) = (fretted.iter().max(), fretted.iter().min()) {
+                if max - min > 5 {
+                    continue;
+                }
+            }
+            used.push(candidate.string_number);
+            current.push(candidate);
+            assign(
+                pitches,
+                index + 1,
+                tuning,
+                max_fret,
+                model,
+                used,
+                current,
+                out,
+            );
+            current.pop();
+            used.pop();
+        }
+    }
+    let mut out = Vec::new();
+    assign(
+        pitches,
+        0,
+        tuning,
+        max_fret,
+        model,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut out,
+    );
+    out.sort_by(|a, b| set_node_cost(model, a).total_cmp(&set_node_cost(model, b)));
+    out.truncate(limit);
+    out
+}
+
+/// Optimize a mixed passage of single notes and chords: same candidate ->
+/// cost -> DP pipeline, with chord voicings as multi-position candidates.
+pub fn optimize_steps(
+    steps: &[Step],
+    tuning: Tuning,
+    max_fret: u32,
+    model: &CostModel,
+) -> Result<StepsResult, Vec<usize>> {
+    if steps.is_empty() {
+        return Ok(StepsResult {
+            path: Vec::new(),
+            cost: 0.0,
+        });
+    }
+    let mut candidates: Vec<Vec<Vec<Position>>> = Vec::with_capacity(steps.len());
+    let mut unplayable = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let sets: Vec<Vec<Position>> = match step {
+            Step::Mono(pitch) => model
+                .candidates(*pitch, tuning, max_fret)
+                .into_iter()
+                .map(|p| vec![p])
+                .collect(),
+            Step::Chord(pitches) => chord_voicings(pitches, tuning, max_fret, model, 6),
+        };
+        if sets.is_empty() {
+            unplayable.push(i);
+        }
+        candidates.push(sets);
+    }
+    if !unplayable.is_empty() {
+        return Err(unplayable);
+    }
+
+    let mut costs: Vec<f64> = candidates[0]
+        .iter()
+        .map(|s| set_node_cost(model, s))
+        .collect();
+    let mut parents: Vec<Vec<usize>> = Vec::with_capacity(steps.len());
+    for step in 1..steps.len() {
+        let mut next = vec![f64::INFINITY; candidates[step].len()];
+        let mut back = vec![0usize; candidates[step].len()];
+        for (ci, cur) in candidates[step].iter().enumerate() {
+            for (pi, prev) in candidates[step - 1].iter().enumerate() {
+                let cost =
+                    costs[pi] + set_transition_cost(model, prev, cur) + set_node_cost(model, cur);
+                if cost < next[ci] {
+                    next[ci] = cost;
+                    back[ci] = pi;
+                }
+            }
+        }
+        costs = next;
+        parents.push(back);
+    }
+    let (mut best, best_cost) = costs
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(i, &c)| (i, c))
+        .expect("non-empty");
+    let mut path = vec![candidates[steps.len() - 1][best].clone()];
+    for step in (1..steps.len()).rev() {
+        best = parents[step - 1][best];
+        path.push(candidates[step - 1][best].clone());
+    }
+    path.reverse();
+    Ok(StepsResult {
+        path,
+        cost: best_cost,
+    })
+}
+
 /// Find the lowest-cost way to play a monophonic pitch sequence.
 ///
 /// Returns `Err(indices)` (positions in the input) for pitches that cannot
@@ -379,5 +579,49 @@ mod tests {
             result.cost,
             path_cost(&naive)
         );
+    }
+}
+
+#[cfg(test)]
+mod chord_tests {
+    use super::*;
+
+    const STANDARD: &[(u32, u8)] = &[(1, 64), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+
+    #[test]
+    fn chord_passage_gets_playable_compact_voicings() {
+        // E5 power chord -> A5 -> single G3 -> D5 chord.
+        let steps = [
+            Step::Chord(vec![40, 47]),
+            Step::Chord(vec![45, 52]),
+            Step::Mono(55),
+            Step::Chord(vec![50, 57]),
+        ];
+        let result = optimize_steps(&steps, STANDARD, 24, &CostModel::default()).expect("playable");
+        assert_eq!(result.path.len(), 4);
+        for (step, set) in steps.iter().zip(&result.path) {
+            // Distinct strings, correct pitch count, tight span.
+            let mut strings: Vec<u32> = set.iter().map(|p| p.string_number).collect();
+            strings.dedup();
+            match step {
+                Step::Chord(p) => assert_eq!(set.len(), p.len()),
+                Step::Mono(_) => assert_eq!(set.len(), 1),
+            }
+            assert_eq!(strings.len(), set.len(), "strings must be unique: {set:?}");
+            let fretted: Vec<u32> = set.iter().filter(|p| p.fret > 0).map(|p| p.fret).collect();
+            if let (Some(max), Some(min)) = (fretted.iter().max(), fretted.iter().min()) {
+                assert!(max - min <= 5, "span too wide: {set:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn unvoiceable_chord_reports_step_index() {
+        // Three pitches below the lowest string cannot be voiced.
+        let steps = [Step::Mono(45), Step::Chord(vec![20, 21, 22])];
+        match optimize_steps(&steps, STANDARD, 24, &CostModel::default()) {
+            Err(indices) => assert_eq!(indices, vec![1]),
+            Ok(_) => panic!("expected unplayable"),
+        }
     }
 }

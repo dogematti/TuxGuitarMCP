@@ -17,7 +17,7 @@ See [PLAN.md](PLAN.md) for the full architecture and
 Phase 8 complete — AI clients can read, analyze, write, refine, **and compose** in the open score
 in TuxGuitar 2.0.1:
 
-- **`tabmcp serve`** exposes 24 MCP tools over stdio — reading
+- **`tabmcp serve`** exposes 27 MCP tools over stdio — reading
   (`tuxguitar_get_bridge_status`, `tuxguitar_get_score_summary`,
   `tuxguitar_get_measures`, `tuxguitar_get_selection`), analysis
   (`tuxguitar_detect_key_and_scale`, `tuxguitar_explain_selection`), and

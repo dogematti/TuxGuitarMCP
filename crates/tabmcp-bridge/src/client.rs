@@ -224,6 +224,11 @@ impl BridgeClient {
         self.call("play", &json!({}))
     }
 
+    /// Move the caret/playback position to a measure and start playing.
+    pub fn play_from(&mut self, measure: u32) -> Result<serde_json::Value, BridgeError> {
+        self.call("play_from", &json!({ "measure": measure }))
+    }
+
     pub fn stop(&mut self) -> Result<serde_json::Value, BridgeError> {
         self.call("stop", &json!({}))
     }

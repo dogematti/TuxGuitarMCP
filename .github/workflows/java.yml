@@ -1,0 +1,47 @@
+name: Java plugin
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Cache TuxGuitar artifacts
+        id: tg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/app/tuxguitar
+          key: tuxguitar-2.0.1-artifacts-v1
+      - name: Build TuxGuitar 2.0.1 modules (cache miss only)
+        if: steps.tg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch 2.0.1 https://github.com/helge17/tuxguitar /tmp/tuxguitar
+          # Build the modules the plugin compiles against (deps pulled via -am).
+          mvn -q -f /tmp/tuxguitar/desktop/pom.xml -DskipTests install \
+            -pl :tuxguitar-lib,:tuxguitar-editor-utils,:tuxguitar-ui-toolkit,:tuxguitar -am
+          # Re-install under the 2.0.1 coordinates the plugin pom expects.
+          for a in tuxguitar-lib tuxguitar-editor-utils tuxguitar-ui-toolkit tuxguitar; do
+            jar=$(find ~/.m2/repository/app/tuxguitar/$a -name "*.jar" ! -name "*sources*" | head -1)
+            mvn -q install:install-file -Dfile="$jar" -DgroupId=app.tuxguitar \
+              -DartifactId="$a" -Dversion=2.0.1 -Dpackaging=jar -DgeneratePom=true
+          done
+      - name: Reinstall 2.0.1 coordinates from cache (cache hit)
+        if: steps.tg-cache.outputs.cache-hit == 'true'
+        run: |
+          for a in tuxguitar-lib tuxguitar-editor-utils tuxguitar-ui-toolkit tuxguitar; do
+            ls ~/.m2/repository/app/tuxguitar/$a/2.0.1/*.jar >/dev/null 2>&1 || {
+              jar=$(find ~/.m2/repository/app/tuxguitar/$a -name "*.jar" ! -name "*sources*" | head -1)
+              mvn -q install:install-file -Dfile="$jar" -DgroupId=app.tuxguitar \
+                -DartifactId="$a" -Dversion=2.0.1 -Dpackaging=jar -DgeneratePom=true
+            }
+          done
+      - name: Build and test the plugin
+        run: mvn -q -f tuxguitar-mcp-bridge/pom.xml test package

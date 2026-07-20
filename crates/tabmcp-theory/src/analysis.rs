@@ -148,6 +148,40 @@ pub fn tonal_center(events: &[NoteEvent]) -> Option<String> {
     detect_scales(events).first().map(|c| c.root.clone())
 }
 
+/// (suffix, semitone template) — ordered so richer matches never shadow.
+const CHORD_TEMPLATES: &[(&str, &[u8])] = &[
+    ("maj7", &[0, 4, 7, 11]),
+    ("7", &[0, 4, 7, 10]),
+    ("m7", &[0, 3, 7, 10]),
+    ("m7b5", &[0, 3, 6, 10]),
+    ("", &[0, 4, 7]),
+    ("m", &[0, 3, 7]),
+    ("dim", &[0, 3, 6]),
+    ("aug", &[0, 4, 8]),
+    ("sus2", &[0, 2, 7]),
+    ("sus4", &[0, 5, 7]),
+    ("5", &[0, 7]),
+];
+
+/// Name a chord from its pitch classes (exact template match), e.g.
+/// [4, 8, 11] -> "E", [9, 0, 4] -> "Am", [4, 11] -> "E5".
+pub fn chord_name(pitch_classes: &[u8]) -> Option<String> {
+    let set: std::collections::BTreeSet<u8> = pitch_classes.iter().map(|p| p % 12).collect();
+    if set.len() < 2 {
+        return None;
+    }
+    for &root in &set {
+        for (suffix, template) in CHORD_TEMPLATES {
+            let candidate: std::collections::BTreeSet<u8> =
+                template.iter().map(|o| (root + o) % 12).collect();
+            if candidate == set {
+                return Some(format!("{}{}", pitch_class_name(root), suffix));
+            }
+        }
+    }
+    None
+}
+
 /// Pitch classes of a named scale at a root (names as in `detect_scales`).
 pub fn scale_pitch_classes(root_pc: u8, scale: &str) -> Option<Vec<u8>> {
     SCALES
@@ -351,5 +385,20 @@ mod tests {
     fn empty_selection_is_handled() {
         assert!(explain(&[]).contains("no notes"));
         assert!(detect_scales(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod chord_name_tests {
+    use super::chord_name;
+
+    #[test]
+    fn names_common_chords() {
+        assert_eq!(chord_name(&[4, 8, 11]).as_deref(), Some("E"));
+        assert_eq!(chord_name(&[9, 0, 4]).as_deref(), Some("Am"));
+        assert_eq!(chord_name(&[4, 11]).as_deref(), Some("E5"));
+        assert_eq!(chord_name(&[7, 11, 2, 5]).as_deref(), Some("G7"));
+        assert_eq!(chord_name(&[5]).as_deref(), None);
+        assert_eq!(chord_name(&[0, 1, 2]).as_deref(), None);
     }
 }

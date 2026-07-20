@@ -278,6 +278,34 @@ struct ExportParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct PlayFromParams {
+    /// Measure to start playback from (1-based).
+    measure: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct HumanizeParams {
+    /// Track number (1-based). Omit to use the active selection's track.
+    #[serde(default)]
+    track_number: Option<u32>,
+    /// First measure. Omit to use the selection, falling back to the whole track.
+    #[serde(default)]
+    from_measure: Option<u32>,
+    /// Last measure (inclusive).
+    #[serde(default)]
+    to_measure: Option<u32>,
+    /// Maximum velocity variation (default 8, max 30).
+    #[serde(default)]
+    amount: Option<u32>,
+    /// False (default): preview only. True: apply — requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call.
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct SetRepeatParams {
     /// Measure where the repeat opens (1-based).
     from_measure: u32,
@@ -842,7 +870,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "Optimize fret positions of a monophonic passage: finds the lowest-effort string/fret path (dynamic programming over hand movement, position shifts, string skips, open strings) without changing any pitches. Defaults to the user's active selection. TWO-STEP SAFETY: preview (reports the effort improvement), then confirm=true with expected_revision. Fails on polyphonic passages (chords) in this version.",
+        description = "Optimize string/fret choices of a passage — now CHORD-AWARE: single notes get the lowest-effort path, chords get re-voiced (compact playable voicings, unique strings) via the same candidates -> cost -> dynamic-programming search. Pitches never change. Defaults to the user's active selection. TWO-STEP SAFETY: preview (with effort delta), then confirm=true with expected_revision.",
         annotations(
             title = "Optimize fingering",
             read_only_hint = false,
@@ -853,6 +881,7 @@ impl TabMcp {
         &self,
         params: Parameters<OptimizeFingeringParams>,
     ) -> Result<Json<EditOutcome>, ErrorData> {
+        use tabmcp_theory::fingering::{optimize_steps, Position, Step};
         let Parameters(p) = params;
         let (song, selection) = self
             .call_bridge(|client| {
@@ -918,46 +947,40 @@ impl TabMcp {
             .map_err(BridgeCallError::into_error_data)?;
         let mut measures = range.measures;
 
-        // Collect the monophonic pitch sequence + current positions.
-        let mut pitches: Vec<u8> = Vec::new();
-        let mut old_positions: Vec<tabmcp_theory::fingering::Position> = Vec::new();
+        // Build steps: one per sounding beat — a Mono pitch or a Chord of
+        // ascending pitches (chords are voiced by the optimizer too).
+        let mut steps: Vec<Step> = Vec::new();
+        let mut old_flat: Vec<Position> = Vec::new();
+        let mut chord_count = 0usize;
         for measure in &measures {
             for beat in &measure.beats {
-                let sounding: Vec<&tabmcp_model::Note> = beat
-                    .voices
-                    .iter()
-                    .flat_map(|v| &v.notes)
-                    .filter(|n| !n.tied)
-                    .collect();
-                if sounding.len() > 1 {
-                    return Err(ErrorData::invalid_params(
-                        format!(
-                            "measure {}, tick {}: {} simultaneous notes — this version \
-                             optimizes monophonic lines only; narrow the range to a \
-                             single-note passage",
-                            measure.number,
-                            beat.start_tick,
-                            sounding.len()
-                        ),
-                        None,
-                    ));
+                let mut pitches: Vec<u8> = Vec::new();
+                for voice in &beat.voices {
+                    for note in &voice.notes {
+                        if note.tied {
+                            continue;
+                        }
+                        if let Some(&open) = open_by_string.get(&note.string) {
+                            pitches.push(open.saturating_add(note.fret as u8));
+                            old_flat.push(Position {
+                                string_number: note.string,
+                                fret: note.fret,
+                            });
+                        }
+                    }
                 }
-                if let Some(note) = sounding.first() {
-                    let open = open_by_string.get(&note.string).copied().ok_or_else(|| {
-                        ErrorData::internal_error(
-                            format!("note on unknown string {}", note.string),
-                            None,
-                        )
-                    })?;
-                    pitches.push(open.saturating_add(note.fret as u8));
-                    old_positions.push(tabmcp_theory::fingering::Position {
-                        string_number: note.string,
-                        fret: note.fret,
-                    });
+                match pitches.len() {
+                    0 => {}
+                    1 => steps.push(Step::Mono(pitches[0])),
+                    _ => {
+                        pitches.sort_unstable();
+                        chord_count += 1;
+                        steps.push(Step::Chord(pitches));
+                    }
                 }
             }
         }
-        if pitches.is_empty() {
+        if steps.is_empty() {
             return Err(ErrorData::invalid_params(
                 "the selected passage contains no notes to optimize",
                 None,
@@ -971,51 +994,48 @@ impl TabMcp {
                 p.max_fret_limit.unwrap_or(max_fret).min(max_fret),
             ));
         }
-        let optimized =
-            tabmcp_theory::fingering::optimize_monophonic(&pitches, &tuning, max_fret, &model)
-                .map_err(|indices| {
-                    ErrorData::invalid_params(
-                        format!(
-                            "{} note(s) not playable within the given constraints \
-                             (tuning/fret range)",
-                            indices.len()
-                        ),
-                        None,
-                    )
-                })?;
-        let old_breakdown = tabmcp_theory::fingering::breakdown(&old_positions, &model);
-        let new_breakdown = tabmcp_theory::fingering::breakdown(&optimized.path, &model);
-        let reasons = tabmcp_theory::fingering::explain_improvement(&old_breakdown, &new_breakdown)
-            .join("; ");
-        let old_cost = old_breakdown.total_cost;
-        let changed = optimized
-            .path
-            .iter()
-            .zip(&old_positions)
-            .filter(|(new, old)| new != old)
-            .count();
+        let optimized = optimize_steps(&steps, &tuning, max_fret, &model).map_err(|bad| {
+            ErrorData::invalid_params(
+                format!(
+                    "{} moment(s) not playable within the given constraints (tuning/fret range)",
+                    bad.len()
+                ),
+                None,
+            )
+        })?;
+        let old_cost = tabmcp_theory::fingering::path_cost_with(&old_flat, &model);
 
-        // Write the optimized positions back into the measures.
+        // Write back: walk beats in the same order; positions within a beat
+        // are assigned to its notes sorted by pitch.
         let mut cursor = 0usize;
-        let mut last_position: Option<tabmcp_theory::fingering::Position> = None;
+        let mut changed = 0usize;
         for measure in &mut measures {
             for beat in &mut measure.beats {
-                for voice in &mut beat.voices {
-                    for note in &mut voice.notes {
-                        let position = if note.tied {
-                            last_position // a tie continues on the same string
-                        } else {
-                            let p = optimized.path.get(cursor).copied();
-                            cursor += 1;
-                            last_position = p;
-                            p
-                        };
-                        if let Some(p) = position {
-                            note.string = p.string_number;
-                            note.fret = p.fret;
+                let mut notes: Vec<&mut tabmcp_model::Note> = beat
+                    .voices
+                    .iter_mut()
+                    .flat_map(|v| v.notes.iter_mut())
+                    .filter(|n| !n.tied)
+                    .collect();
+                if notes.is_empty() {
+                    continue;
+                }
+                notes.sort_by_key(|n| {
+                    open_by_string
+                        .get(&n.string)
+                        .map(|&o| o.saturating_add(n.fret as u8))
+                        .unwrap_or(0)
+                });
+                if let Some(set) = optimized.path.get(cursor) {
+                    for (note, position) in notes.iter_mut().zip(set.iter()) {
+                        if note.string != position.string_number || note.fret != position.fret {
+                            changed += 1;
                         }
+                        note.string = position.string_number;
+                        note.fret = position.fret;
                     }
                 }
+                cursor += 1;
             }
         }
 
@@ -1023,19 +1043,18 @@ impl TabMcp {
             return Ok(Json(EditOutcome {
                 applied: false,
                 summary: format!(
-                    "PREVIEW ONLY — nothing changed. Would re-finger {changed} of {} notes in \
-                     measures {from}-{to} of track {track_number}; hand-effort cost {:.1} -> \
-                     {:.1} (lower is easier). Why: {reasons}. All pitches stay identical. To \
-                     apply, call again with confirm=true and expected_revision={}.",
-                    pitches.len(),
-                    old_cost,
+                    "PREVIEW ONLY — nothing changed. Would re-finger {changed} note(s) across \
+                     {} moment(s) ({chord_count} chord(s) re-voiced) in measures {from}-{to} of \
+                     track {track_number}; hand-effort {old_cost:.1} -> {:.1}. All pitches stay \
+                     identical. To apply, call again with confirm=true and expected_revision={}.",
+                    steps.len(),
                     optimized.cost,
                     range.revision,
                 ),
                 revision: range.revision,
                 measures_added: None,
-                notes_before: Some(pitches.len() as u32),
-                notes_after: Some(pitches.len() as u32),
+                notes_before: Some(old_flat.len() as u32),
+                notes_after: Some(old_flat.len() as u32),
             }));
         }
         let expected_revision = p.expected_revision.ok_or_else(|| {
@@ -1053,17 +1072,15 @@ impl TabMcp {
         Ok(Json(EditOutcome {
             applied: true,
             summary: format!(
-                "Applied: re-fingered {changed} of {} notes in measures {from}-{to} of track \
-                 {track_number} (hand-effort {:.1} -> {:.1}); pitches unchanged. The user can \
-                 undo with Cmd+Z.",
-                pitches.len(),
-                old_cost,
+                "Applied: re-fingered {changed} note(s) ({chord_count} chord(s) re-voiced) in \
+                 measures {from}-{to} of track {track_number}; hand-effort {old_cost:.1} -> \
+                 {:.1}; pitches unchanged. The user can undo with Cmd+Z.",
                 optimized.cost,
             ),
             revision: result.new_revision,
             measures_added: None,
-            notes_before: Some(pitches.len() as u32),
-            notes_after: Some(pitches.len() as u32),
+            notes_before: Some(old_flat.len() as u32),
+            notes_after: Some(old_flat.len() as u32),
         }))
     }
 
@@ -1221,6 +1238,225 @@ impl TabMcp {
             measures_added: None,
             notes_before: None,
             notes_after: None,
+        }))
+    }
+
+    #[tool(
+        description = "Jump playback to a specific measure and start playing from there (moves the caret too). Use tuxguitar_stop to stop.",
+        annotations(
+            title = "Play from measure",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_play_from(
+        &self,
+        params: Parameters<PlayFromParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        self.call_bridge(move |client| client.play_from(p.measure))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(format!("Playing from measure {}.", p.measure))
+    }
+
+    #[tool(
+        description = "Detect and name the chords in a passage (power chords, triads, sevenths — e.g. E5, Am, G7) beat by beat, with a per-measure progression summary. Defaults to the user's active selection.",
+        annotations(title = "Detect chords", read_only_hint = true)
+    )]
+    async fn tuxguitar_detect_chords(
+        &self,
+        params: Parameters<AnalysisScopeParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let (song, selection) = self
+            .call_bridge(|client| {
+                let song = client.read_song()?;
+                let selection = client.read_selection()?;
+                Ok((song, selection))
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let track_number = p
+            .track_number
+            .or(if selection.active {
+                selection.track_number
+            } else {
+                None
+            })
+            .unwrap_or(1);
+        let song_len = song.headers.len() as u32;
+        let (from, to) = match (p.from_measure, p.to_measure) {
+            (Some(from), Some(to)) => (from, to),
+            (Some(from), None) => (from, from),
+            (None, _) if selection.active => (
+                selection.from_measure.unwrap_or(1),
+                selection.to_measure.unwrap_or(song_len),
+            ),
+            _ => (1, song_len.max(1)),
+        };
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track_number} does not exist"), None)
+            })?;
+        let open_by_string: std::collections::HashMap<u32, u8> = track
+            .strings
+            .iter()
+            .map(|s| (s.number, s.open_pitch))
+            .collect();
+        let range = self
+            .call_bridge(move |client| client.read_measures(track_number, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+
+        let mut out = format!("Chords on track {track_number}, measures {from}-{to}:\n");
+        let mut progression: Vec<String> = Vec::new();
+        for measure in &range.measures {
+            let mut names: Vec<String> = Vec::new();
+            for beat in &measure.beats {
+                let pcs: Vec<u8> = beat
+                    .voices
+                    .iter()
+                    .flat_map(|v| &v.notes)
+                    .filter(|n| !n.tied)
+                    .filter_map(|n| open_by_string.get(&n.string).map(|&o| o + n.fret as u8))
+                    .collect();
+                if pcs.len() >= 2 {
+                    if let Some(name) = tabmcp_theory::analysis::chord_name(&pcs) {
+                        if names.last() != Some(&name) {
+                            names.push(name.clone());
+                        }
+                        if progression.last() != Some(&name) {
+                            progression.push(name);
+                        }
+                    }
+                }
+            }
+            out.push_str(&format!(
+                "  m{}: {}\n",
+                measure.number,
+                if names.is_empty() {
+                    "-".into()
+                } else {
+                    names.join(" ")
+                }
+            ));
+        }
+        out.push_str(&format!(
+            "Progression: {}\n",
+            if progression.is_empty() {
+                "(no chords detected)".into()
+            } else {
+                progression.join(" - ")
+            }
+        ));
+        Ok(out)
+    }
+
+    #[tool(
+        description = "Humanize a passage: vary note velocities by a deterministic +/- amount (default 8) so playback and MIDI export feel less robotic. Pitches and rhythm unchanged. TWO-STEP SAFETY: preview, then confirm=true with expected_revision. Undoable.",
+        annotations(
+            title = "Humanize velocities",
+            read_only_hint = false,
+            destructive_hint = true
+        )
+    )]
+    async fn tuxguitar_humanize(
+        &self,
+        params: Parameters<HumanizeParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let amount = p.amount.unwrap_or(8).min(30) as i64;
+        let (song, selection) = self
+            .call_bridge(|client| {
+                let song = client.read_song()?;
+                let selection = client.read_selection()?;
+                Ok((song, selection))
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let track_number = p
+            .track_number
+            .or(if selection.active {
+                selection.track_number
+            } else {
+                None
+            })
+            .unwrap_or(1);
+        let song_len = song.headers.len() as u32;
+        let (from, to) = match (p.from_measure, p.to_measure) {
+            (Some(from), Some(to)) => (from, to),
+            (Some(from), None) => (from, from),
+            (None, _) if selection.active => (
+                selection.from_measure.unwrap_or(1),
+                selection.to_measure.unwrap_or(song_len),
+            ),
+            _ => (1, song_len.max(1)),
+        };
+        let range = self
+            .call_bridge(move |client| client.read_measures(track_number, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let mut measures = range.measures;
+        let mut changed = 0u32;
+        for measure in &mut measures {
+            for beat in &mut measure.beats {
+                for voice in &mut beat.voices {
+                    for note in &mut voice.notes {
+                        // Deterministic jitter: same input -> same result.
+                        let hash = (measure.number as u64).wrapping_mul(73856093)
+                            ^ beat.start_tick.wrapping_mul(19349663)
+                            ^ (note.string as u64).wrapping_mul(83492791);
+                        let delta = (hash % (2 * amount as u64 + 1)) as i64 - amount;
+                        let new_velocity = (note.velocity as i64 + delta).clamp(25, 120) as u32;
+                        if new_velocity != note.velocity {
+                            changed += 1;
+                        }
+                        note.velocity = new_velocity;
+                    }
+                }
+            }
+        }
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY — nothing changed. Would vary velocity on {changed} note(s) \
+                     (+/-{amount}) in measures {from}-{to} of track {track_number}. To apply, \
+                     call again with confirm=true and expected_revision={}.",
+                    range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: Some(changed),
+                notes_after: Some(changed),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track_number, from, &measures, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied: humanized {changed} note velocities (+/-{amount}) in measures \
+                 {from}-{to} of track {track_number}. The user can undo with Cmd+Z.",
+            ),
+            revision: result.new_revision,
+            measures_added: None,
+            notes_before: Some(changed),
+            notes_after: Some(changed),
         }))
     }
 
