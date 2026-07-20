@@ -3,6 +3,7 @@
 
 pub mod analysis;
 pub mod arrangement;
+pub mod critique;
 pub mod fingering;
 pub mod generation;
 pub mod pitch;

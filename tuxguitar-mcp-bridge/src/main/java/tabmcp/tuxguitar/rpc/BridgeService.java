@@ -14,6 +14,7 @@ import app.tuxguitar.editor.undo.TGUndoableManager;
 import app.tuxguitar.app.view.component.tab.Caret;
 import app.tuxguitar.app.view.component.tab.Selector;
 import app.tuxguitar.app.view.component.tab.Tablature;
+import app.tuxguitar.song.managers.TGSongManager;
 import app.tuxguitar.song.models.TGSong;
 import app.tuxguitar.song.models.TGTrack;
 import app.tuxguitar.util.TGContext;
@@ -35,7 +36,7 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.5.1";
+	public static final String PLUGIN_VERSION = "0.6.0";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 
@@ -543,6 +544,50 @@ public class BridgeService {
 		JsonObject result = new JsonObject();
 		result.addProperty("path", path.toString());
 		result.addProperty("bytes", size);
+		return result;
+	}
+
+	/** Set (or clear with empty title) a section marker on a measure. */
+	public JsonObject setMarker(JsonObject params) throws RpcException {
+		final int measure = params.has("measure") ? params.get("measure").getAsInt() : 1;
+		final String title = (params.has("title") && !params.get("title").isJsonNull())
+			? params.get("title").getAsString() : "";
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		final TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		app.tuxguitar.song.models.TGMeasureHeader found = null;
+		java.util.Iterator<app.tuxguitar.song.models.TGMeasureHeader> it = song.getMeasureHeaders();
+		while (it.hasNext()) {
+			app.tuxguitar.song.models.TGMeasureHeader header = it.next();
+			if (header.getNumber() == measure) {
+				found = header;
+			}
+		}
+		if (found == null) {
+			throw new RpcException(RpcException.INVALID_RANGE, "measure " + measure + " not found");
+		}
+		final app.tuxguitar.song.models.TGMeasureHeader header = found;
+		final TGSongManager songManager = documentManager.getSongManager();
+		TGEditorManager editor = TGEditorManager.getInstance(this.context);
+		editor.runLocked(new Runnable() {
+			public void run() {
+				if (title.isEmpty()) {
+					header.setMarker(null);
+				} else {
+					app.tuxguitar.song.models.TGMarker marker =
+						songManager.getFactory().newMarker();
+					marker.setMeasure(measure);
+					marker.setTitle(title);
+					header.setMarker(marker);
+				}
+			}
+		});
+		editor.updateSong();
+		editor.redraw();
+		JsonObject result = new JsonObject();
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
 		return result;
 	}
 

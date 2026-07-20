@@ -172,6 +172,8 @@ public class McpSocketServer {
 				return this.service.createTrack(params);
 			case "change_tuning":
 				return this.service.changeTuning(params);
+			case "set_marker":
+				return this.service.setMarker(params);
 			case "set_repeat":
 				return this.service.setRepeat(params);
 			case "set_tempo":

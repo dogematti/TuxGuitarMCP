@@ -220,6 +220,15 @@ impl BridgeClient {
         self.call("render_midi", &json!({}))
     }
 
+    /// Set (or clear with an empty title) a section marker on a measure.
+    pub fn set_marker(
+        &mut self,
+        measure: u32,
+        title: &str,
+    ) -> Result<serde_json::Value, BridgeError> {
+        self.call("set_marker", &json!({ "measure": measure, "title": title }))
+    }
+
     pub fn play(&mut self) -> Result<serde_json::Value, BridgeError> {
         self.call("play", &json!({}))
     }

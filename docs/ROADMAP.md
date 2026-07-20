@@ -105,8 +105,14 @@ can write expressive tablature, not just note grids.
 rhythmic tightness, empty bars, velocity balance); v2 shipped as
 tuxguitar_render_and_listen (headless MIDI -> fluidsynth + TuxGuitar's own
 MagicSFver2 soundfont -> WAV -> DSP: loudness, clipping, spectral balance,
-quiet holes; WAV kept for the user). v3 ideas: per-track stem rendering,
-measure-aligned audio mapping, score-vs-audio onset verification.
+quiet holes; WAV kept for the user). v3 shipped in spirit as the AI-EAR REFINEMENT LOOP: tuxguitar_evaluate is
+the consolidated per-pass critique (groove consistency, motif repetition
+with the recurring interval pattern, density, robotic-dynamics detection,
+cross-track analysis, key/scale) and the server instructions teach every
+MCP client the loop: evaluate -> fix top issue (undoable) -> re-evaluate ->
+render_and_listen; the undo stack is the version history. Still open:
+per-track stem rendering (needs MIDI track-splitting), measure-aligned
+audio mapping, score-vs-audio onset verification.
 - `render_and_analyze`: headless MIDI export -> fluidsynth render -> DSP
   feature extraction (onset alignment, per-track loudness curves, spectral
   balance, low-end mud detection) -> structured report the AI edits from.

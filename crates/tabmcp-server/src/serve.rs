@@ -306,6 +306,14 @@ struct HumanizeParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct SetMarkerParams {
+    /// Measure to mark (1-based).
+    measure: u32,
+    /// Section name (e.g. "Verse", "Chorus"). Empty string clears the marker.
+    title: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct SetRepeatParams {
     /// Measure where the repeat opens (1-based).
     from_measure: u32,
@@ -1461,6 +1469,111 @@ impl TabMcp {
     }
 
     #[tool(
+        description = "Set a section marker on a measure (e.g. 'Verse', 'Chorus') — visible in TuxGuitar and usable for song-structure navigation. Empty title clears the marker.",
+        annotations(title = "Set marker", read_only_hint = false, destructive_hint = false)
+    )]
+    async fn tuxguitar_set_marker(
+        &self,
+        params: Parameters<SetMarkerParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let title = p.title.clone();
+        self.call_bridge(move |client| client.set_marker(p.measure, &title))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(if p.title.is_empty() {
+            format!("Marker cleared on measure {}.", p.measure)
+        } else {
+            format!("Marker \"{}\" set on measure {}.", p.title, p.measure)
+        })
+    }
+
+    #[tool(
+        description = "AI EAR — one deep listening pass over every track for the refinement loop: per-track groove consistency, motif repetition (with the recurring interval pattern), note density, dynamics (robotic-velocity detection), plus the cross-track analysis (dissonance clashes, register masking, alignment, empty bars) and key/scale detection. Returns a prioritized scorecard. Loop: evaluate -> fix the top issue with the edit tools -> evaluate again; finish with tuxguitar_render_and_listen to hear the actual mix.",
+        annotations(title = "Evaluate (AI Ear)", read_only_hint = true)
+    )]
+    async fn tuxguitar_evaluate(
+        &self,
+        params: Parameters<AnalysisScopeParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let song = self.fetch_song().await?;
+        let song_len = song.headers.len() as u32;
+        let from = p.from_measure.unwrap_or(1);
+        let to = p
+            .to_measure
+            .unwrap_or(song_len)
+            .min(from + MAX_MEASURES_PER_READ - 1);
+        if from == 0 || to < from || to > song_len {
+            return Err(ErrorData::invalid_params(
+                format!("invalid measure range {from}-{to}: the score has measures 1-{song_len}"),
+                None,
+            ));
+        }
+
+        let mut out = format!("AI EAR scorecard, measures {from}-{to}:\n\n");
+        let mut inputs = Vec::new();
+        let mut all_events: Vec<NoteEvent> = Vec::new();
+        for track in &song.tracks {
+            let track_number = track.number;
+            let range = self
+                .call_bridge(move |client| client.read_measures(track_number, from, to))
+                .await
+                .map_err(BridgeCallError::into_error_data)?;
+            let tuning: Vec<(u32, u8)> = track
+                .strings
+                .iter()
+                .map(|s| (s.number, s.open_pitch))
+                .collect();
+            if !track.is_percussion {
+                let open: std::collections::HashMap<u32, u8> = tuning.iter().copied().collect();
+                for measure in &range.measures {
+                    for beat in &measure.beats {
+                        for voice in &beat.voices {
+                            for note in &voice.notes {
+                                if let Some(&o) = open.get(&note.string) {
+                                    all_events.push(NoteEvent {
+                                        pitch: o.saturating_add(note.fret as u8),
+                                        weight: 480,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let report = tabmcp_theory::critique::critique(&range.measures, &tuning);
+            out.push_str(&tabmcp_theory::critique::describe(
+                &report,
+                &format!("Track {} \"{}\"", track.number, track.name),
+            ));
+            inputs.push(tabmcp_theory::arrangement::TrackInput {
+                number: track.number,
+                name: track.name.clone(),
+                is_percussion: track.is_percussion,
+                tuning,
+                measures: range.measures,
+            });
+        }
+        out.push('\n');
+        let arrangement = tabmcp_theory::arrangement::analyze_arrangement(&inputs);
+        out.push_str(&tabmcp_theory::arrangement::describe(&arrangement));
+        if let Some(best) = detect_scales(&all_events).first() {
+            out.push_str(&format!(
+                "Key/scale: {} {} (confidence {:.0}%)\n",
+                best.root,
+                best.scale,
+                best.confidence * 100.0
+            ));
+        }
+        out.push_str(
+            "\nNext: fix the top ISSUE with the edit tools (each fix is undoable), then \
+             evaluate again; when the scorecard is clean, run tuxguitar_render_and_listen.",
+        );
+        Ok(out)
+    }
+
+    #[tool(
         description = "The 'virtual ear', audio edition: render the WHOLE song through TuxGuitar's own soundfont (headless MIDI -> fluidsynth -> WAV) and analyze the actual audio — true loudness, clipping, spectral balance (low-end mud / darkness), and quiet holes. Slower than tuxguitar_analyze_arrangement (use that for note-level issues); use this to hear the MIX. Requires fluidsynth (brew install fluid-synth). The WAV is kept at ~/.tuxguitar-mcp/render.wav for the user to play.",
         annotations(title = "Render & listen", read_only_hint = true)
     )]
@@ -2154,7 +2267,13 @@ impl ServerHandler for TabMcp {
                  tuxguitar_detect_key_and_scale for content and analysis. If tools report the \
                  bridge is unavailable, the user needs to start TuxGuitar with the TabMCP \
                  plugin installed. String numbers are 1-based (1 = highest string); pitch = \
-                 open-string pitch + fret; time is in ticks (960 per quarter note)."
+                 open-string pitch + fret; time is in ticks (960 per quarter note). \
+                 AI-EAR REFINEMENT LOOP: after composing or generating, call \
+                 tuxguitar_evaluate for a scorecard, fix the top issue with the edit \
+                 tools (every fix previews first and is undoable), re-evaluate, and \
+                 finish with tuxguitar_render_and_listen to hear the real mix. Each \
+                 pass, tell the user what changed and why. The undo stack is the \
+                 version history: Cmd+Z steps back through your passes."
                 .into(),
         );
         info
