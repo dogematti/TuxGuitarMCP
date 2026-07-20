@@ -324,6 +324,27 @@ pub fn accent_group(measures: &mut [Measure], groups: &[u32], unit: u64) {
     }
 }
 
+/// Re-bar: pour the source material, as one continuous stream, into a
+/// destination measure structure with different barlines (the signature
+/// djent device: the same riff re-barred across 7/8, 5/4, 4/4). Onsets
+/// keep their flow positions; only the barlines move. Notes whose written
+/// duration crosses a new barline simply ring across it.
+pub fn rebar(source: &[Measure], dest_template: &[Measure]) -> Vec<Measure> {
+    let (_, beats) = collect_range(source);
+    let dest_lens = lengths(dest_template);
+    let mut out: Vec<Measure> = dest_template
+        .iter()
+        .map(|m| Measure {
+            number: m.number,
+            start_tick: m.start_tick,
+            key_signature: m.key_signature,
+            beats: Vec::new(),
+        })
+        .collect();
+    redistribute(&mut out, &dest_lens, beats);
+    out
+}
+
 /// Dynamics swap: palm-muted notes become accented open stabs and vice versa
 /// — turns a chug line into its call-and-response counterpart.
 pub fn swap_dynamics(measures: &mut [Measure]) {
@@ -480,6 +501,40 @@ mod tests {
             .collect();
         assert_eq!(accents, vec![true, false, false, true]);
         assert_eq!(m[0].beats[0].voices[0].notes[0].velocity, 108);
+    }
+
+    #[test]
+    fn rebar_pours_flow_across_new_barlines() {
+        // Source: one 4/4 bar of 8ths (offsets 0,480,960,1440 - half full).
+        let source = riff();
+        // Dest: two 7/8-ish measures (1680 ticks each).
+        let dest: Vec<Measure> = (0..2)
+            .map(|i| Measure {
+                number: 10 + i,
+                start_tick: 960 + i as u64 * 1680,
+                key_signature: 0,
+                beats: vec![],
+            })
+            .collect();
+        let out = rebar(&source, &dest);
+        assert_eq!(out.len(), 2);
+        // Flow offsets 0,480,960,1440: first measure takes 0,480,960;
+        // 1440 lands at offset 1440-1680... 1440 < 1680 so all 4 in m1.
+        assert_eq!(out[0].beats.len(), 4);
+        // Wider check with 16ths filling the bar: 8 onsets over 3840.
+        let mut full = riff();
+        full[0].beats = (0..8u64)
+            .map(|j| Beat {
+                start_tick: 960 + j * 480,
+                voices: full[0].beats[0].voices.clone(),
+            })
+            .collect();
+        let out = rebar(&full, &dest);
+        // 1680/480 = 3.5 -> offsets 0,480,960,1440 in m1; 1680.. in m2.
+        assert_eq!(out[0].beats.len(), 4);
+        assert_eq!(out[1].beats.len(), 3); // 1920,2400,2880 fit; 3360 beyond 3360? 3360 = 2*1680 boundary -> dropped
+        let first_m2 = out[1].beats[0].start_tick - out[1].start_tick;
+        assert_eq!(first_m2, 1920 - 1680);
     }
 
     #[test]

@@ -562,13 +562,90 @@ struct EvaluateParams {
     emotion_target: Option<String>,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Default, Deserialize, JsonSchema)]
 struct RiffDnaParams {
+    /// Track (1-based). Required unless list_bank.
+    #[serde(default)]
+    track_number: Option<u32>,
+    /// Source riff range (1-based, inclusive). Required unless list_bank.
+    #[serde(default)]
+    from_measure: Option<u32>,
+    #[serde(default)]
+    to_measure: Option<u32>,
+    /// Save the extracted DNA under this name in the local DNA bank
+    /// (~/.tuxguitar-mcp/dna_bank.jsonl) for later sessions.
+    #[serde(default)]
+    save_as: Option<String>,
+    /// True: list the saved DNA bank instead of extracting.
+    #[serde(default)]
+    list_bank: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct HookCheckParams {
     /// Track (1-based).
     track_number: u32,
-    /// Source riff range (1-based, inclusive).
+    /// Riff range (1-based, inclusive).
     from_measure: u32,
     to_measure: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct GenerateRiffParams {
+    /// Track to write into (1-based); its tuning defines playability.
+    track_number: u32,
+    /// Destination range (1-based, inclusive) - its meters define the bars.
+    from_measure: u32,
+    to_measure: u32,
+    /// Scale with root, e.g. "A phrygian dominant", "E harmonic minor".
+    scale: String,
+    /// Register bounds as note names (e.g. "A1".."D3"). Defaults to the
+    /// track's lowest open string up to a 12th above it.
+    #[serde(default)]
+    register_low: Option<String>,
+    #[serde(default)]
+    register_high: Option<String>,
+    /// Comma list of rhythm-cell names to build from (gallop, tresillo,
+    /// herta, hemiola, quintuplet, ...). Omit for the default metal set.
+    #[serde(default)]
+    cells: Option<String>,
+    /// Accent offsets in ticks within each measure (comma list; 960 per
+    /// quarter). These get roots + accent marks - set them to your kick
+    /// pattern for instant unison. Default "0".
+    #[serde(default)]
+    accents: Option<String>,
+    /// Syncopation window like "0.2-0.6" (default 0.15-0.55).
+    #[serde(default)]
+    syncopation: Option<String>,
+    /// Onsets per measure like "4-10" (default).
+    #[serde(default)]
+    density: Option<String>,
+    /// Palm-mute the unaccented low notes (default true).
+    #[serde(default)]
+    palm_mute_low: Option<bool>,
+    /// False (default): preview. True: apply - requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct RebarParams {
+    /// Track (1-based).
+    track_number: u32,
+    /// Source material range (1-based, inclusive).
+    from_measure: u32,
+    to_measure: u32,
+    /// Destination range whose measures already carry the DESIRED time
+    /// signatures (set them first with tuxguitar_set_time_signature).
+    dest_from: u32,
+    dest_to: u32,
+    /// False (default): preview. True: apply - requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    expected_revision: Option<u64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1429,6 +1506,36 @@ impl TabMcp {
         params: Parameters<GenerateParams>,
     ) -> Result<Json<EditOutcome>, ErrorData> {
         self.generate(params.0, GenerateKind::Drums).await
+    }
+
+    #[tool(
+        description = "Generate a COUNTERLINE: an answering melody written into the source riff's gaps - contrary motion, consonant on strong beats, an octave above. Turns one line into two interlocking lines (the djent/prog device). Fails when the source has no gaps: thin the riff first. Written to a NEW track (or target_track). TWO-STEP: preview, then confirm=true with expected_revision (undoable).",
+        annotations(
+            title = "Generate counterline",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_generate_counterline(
+        &self,
+        params: Parameters<GenerateParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        self.generate(params.0, GenerateKind::Counterline).await
+    }
+
+    #[tool(
+        description = "Generate INTERLOCKED drums derived from the riff itself (not a template): kick lands in unison with the source's accents, snare holds the backbeat in any meter, hats keep the 8th grid, crash marks the entry. This is how breakdowns get their weight. Written to a NEW percussion track (or target_track). TWO-STEP: preview, then confirm=true with expected_revision (undoable).",
+        annotations(
+            title = "Generate interlocked drums",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_generate_interlock(
+        &self,
+        params: Parameters<GenerateParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        self.generate(params.0, GenerateKind::InterlockDrums).await
     }
 
     #[tool(
@@ -2544,6 +2651,286 @@ impl TabMcp {
     }
 
     #[tool(
+        description = "CONSTRAINT-GUIDED RIFF GENERATION — beam search over the rhythm-cell alphabet and a scale's pitch space, scored WHILE generating: accent offsets get roots and accent marks (set them to the kick pattern for instant unison), syncopation stays in the target window, motion is mostly stepwise with b2/tritone spice, an AABA' form gives the riff grammar, velocities and palm mutes come pre-shaped. Deterministic: same constraints, same riff. Rhythm cells: quarter, 8ths, 16ths, gallop, reverse-gallop, herta, offbeat-8ths, and-of-one, tresillo, hemiola, triplet-8ths, quintuplet, dotted-8ths, sixteenth-rest-start, rest-8th, rest-quarter. Destination measures' meters define the bars (works in 7/8 etc.). TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
+        annotations(title = "Generate riff", read_only_hint = false, destructive_hint = true)
+    )]
+    async fn tuxguitar_generate_riff(
+        &self,
+        params: Parameters<GenerateRiffParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let track_number = p.track_number;
+        let (from, to) = (p.from_measure, p.to_measure);
+        if from == 0 || to < from || to - from + 1 > MAX_MEASURES_PER_READ {
+            return Err(ErrorData::invalid_params("invalid range", None));
+        }
+        let song = self.fetch_song().await?;
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == track_number)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {track_number} not found"), None)
+            })?;
+        let tuning: Vec<(u32, u8)> = track
+            .strings
+            .iter()
+            .map(|s| (s.number, s.open_pitch))
+            .collect();
+        let max_fret = if track.max_fret > 0 { track.max_fret } else { 24 };
+
+        // Scale: "A phrygian dominant" -> root pc + interval steps.
+        let (root_name, scale_name) = p
+            .scale
+            .trim()
+            .split_once(' ')
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    "scale must be '<root> <name>', e.g. 'A phrygian dominant'",
+                    None,
+                )
+            })?;
+        let root_pc = tabmcp_theory::parse_note(&format!("{root_name}4"))
+            .map(|p| p % 12)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("unknown root note '{root_name}'"), None)
+            })?;
+        let steps = tabmcp_theory::analysis::SCALES
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(scale_name.trim()))
+            .map(|(_, steps)| *steps)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!(
+                        "unknown scale '{}'; catalog has {} scales - try 'phrygian dominant', \
+                         'harmonic minor', 'hirajoshi', ...",
+                        scale_name.trim(),
+                        tabmcp_theory::analysis::SCALES.len()
+                    ),
+                    None,
+                )
+            })?;
+
+        // Register: default low open string .. +19 semitones.
+        let lowest_open = tuning.iter().map(|&(_, o)| o).min().unwrap_or(40);
+        let parse_reg = |spec: &Option<String>, default: u8| -> Result<u8, ErrorData> {
+            match spec {
+                Some(s) => tabmcp_theory::parse_note(s).ok_or_else(|| {
+                    ErrorData::invalid_params(format!("bad note name '{s}'"), None)
+                }),
+                None => Ok(default),
+            }
+        };
+        let reg_lo = parse_reg(&p.register_low, lowest_open)?;
+        let reg_hi = parse_reg(&p.register_high, lowest_open.saturating_add(19))?;
+        let pitch_pool: Vec<u8> = (reg_lo..=reg_hi)
+            .filter(|pitch| steps.contains(&((pitch + 12 - root_pc) % 12)))
+            .collect();
+
+        // Cells, accents, windows.
+        let cells: Vec<&'static tabmcp_theory::cells::RhythmCell> = match &p.cells {
+            Some(spec) => spec
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .map(|name| {
+                    tabmcp_theory::cells::cell(name).ok_or_else(|| {
+                        ErrorData::invalid_params(
+                            format!(
+                                "unknown cell '{}'; catalog:\n{}",
+                                name.trim(),
+                                tabmcp_theory::cells::catalog()
+                            ),
+                            None,
+                        )
+                    })
+                })
+                .collect::<Result<_, _>>()?,
+            None => Vec::new(),
+        };
+        let parse_range_f = |spec: &Option<String>, default: (f64, f64)| {
+            spec.as_ref()
+                .and_then(|s| s.split_once('-'))
+                .and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?)))
+                .unwrap_or(default)
+        };
+        let parse_range_u = |spec: &Option<String>, default: (usize, usize)| {
+            spec.as_ref()
+                .and_then(|s| s.split_once('-'))
+                .and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?)))
+                .unwrap_or(default)
+        };
+        let accents: Vec<u64> = p
+            .accents
+            .as_deref()
+            .unwrap_or("0")
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+
+        // Destination meters -> measure lengths.
+        let range = self
+            .call_bridge(move |client| client.read_measures(track_number, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let mut measure_lens: Vec<u64> = Vec::new();
+        for i in 0..range.measures.len() {
+            let len = if i + 1 < range.measures.len() {
+                range.measures[i + 1]
+                    .start_tick
+                    .saturating_sub(range.measures[i].start_tick)
+            } else {
+                measure_lens.last().copied().unwrap_or(3840)
+            };
+            measure_lens.push(if len > 0 { len } else { 3840 });
+        }
+
+        let constraints = tabmcp_theory::search::RiffConstraints {
+            pitch_pool,
+            root_pc,
+            cells,
+            measure_lens,
+            accents,
+            syncopation: parse_range_f(&p.syncopation, (0.15, 0.55)),
+            notes_per_measure: parse_range_u(&p.density, (4, 10)),
+            max_pitch_repeat: 3,
+            palm_mute_low: p.palm_mute_low.unwrap_or(true),
+        };
+        let first_start = range
+            .measures
+            .first()
+            .map(|m| m.start_tick)
+            .unwrap_or(960);
+        let (mut measures, explanation) = tabmcp_theory::search::generate_riff(
+            &constraints,
+            &tuning,
+            max_fret,
+            from,
+            first_start,
+        )
+        .map_err(|e| ErrorData::invalid_params(e, None))?;
+        for (i, measure) in measures.iter_mut().enumerate() {
+            measure.number = from + i as u32;
+        }
+        let notes = count_notes(&measures);
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY - nothing changed. Generated riff for track {track_number} \
+                     measures {from}-{to} in {} - {explanation}. Would write {notes} notes. \
+                     To apply, call again with confirm=true and expected_revision={}.",
+                    p.scale, range.revision,
+                ),
+                revision: range.revision,
+                measures_added: None,
+                notes_before: Some(notes),
+                notes_after: Some(notes),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track_number, from, &measures, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied generated riff to track {track_number} measures {from}-{to}: \
+                 {explanation}. The user can undo with Cmd+Z.",
+            ),
+            revision: result.new_revision,
+            measures_added: Some(result.measures_added),
+            notes_before: Some(notes),
+            notes_after: Some(result.notes_after),
+        }))
+    }
+
+    #[tool(
+        description = "RE-BAR — pour a passage, as one continuous stream, into measures with DIFFERENT time signatures: the notes keep their flow positions, only the barlines move (the signature djent device - the same riff re-barred across 7/8, 5/4, 4/4). Workflow: set the destination measures' meters first (tuxguitar_set_time_signature), then rebar the source into them. Notes whose duration crosses a new barline ring across it. TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
+        annotations(title = "Re-bar riff", read_only_hint = false, destructive_hint = true)
+    )]
+    async fn tuxguitar_rebar(
+        &self,
+        params: Parameters<RebarParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let Parameters(p) = params;
+        let track = p.track_number;
+        if p.from_measure == 0
+            || p.to_measure < p.from_measure
+            || p.dest_from == 0
+            || p.dest_to < p.dest_from
+            || p.to_measure - p.from_measure + 1 > MAX_MEASURES_PER_READ
+            || p.dest_to - p.dest_from + 1 > MAX_MEASURES_PER_READ
+        {
+            return Err(ErrorData::invalid_params("invalid range", None));
+        }
+        let (source_from, source_to) = (p.from_measure, p.to_measure);
+        let source = self
+            .call_bridge(move |client| client.read_measures(track, source_from, source_to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let (dest_from, dest_to) = (p.dest_from, p.dest_to);
+        let dest = self
+            .call_bridge(move |client| client.read_measures(track, dest_from, dest_to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let mut rebarred =
+            tabmcp_theory::transforms::rebar(&source.measures, &dest.measures);
+        for (i, measure) in rebarred.iter_mut().enumerate() {
+            measure.number = dest_from + i as u32;
+        }
+        let notes = count_notes(&rebarred);
+        let source_notes = count_notes(&source.measures);
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY - nothing changed. Would re-bar measures {source_from}-\
+                     {source_to} into the meter structure of measures {dest_from}-{dest_to} \
+                     ({notes} of {source_notes} source notes fit; overflow past the last \
+                     destination barline is dropped). To apply, call again with confirm=true \
+                     and expected_revision={}.",
+                    dest.revision,
+                ),
+                revision: dest.revision,
+                measures_added: None,
+                notes_before: Some(source_notes),
+                notes_after: Some(notes),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(track, dest_from, &rebarred, expected_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Re-barred measures {source_from}-{source_to} into {dest_from}-{dest_to}. \
+                 The user can undo with Cmd+Z.",
+            ),
+            revision: result.new_revision,
+            measures_added: Some(result.measures_added),
+            notes_before: Some(source_notes),
+            notes_after: Some(result.notes_after),
+        }))
+    }
+
+    #[tool(
         description = "THEME TRACKER (musical memory) — map how motifs travel through the song: which section introduces motif A, which sections restate, vary, invert, retrograde, fragment or extend it, and where call-and-response phrasing happens (paired measures with the same rhythm and answering contour). Flags a song that forgets its own material. Sections come from markers and meter changes. Classical development devices, automated.",
         annotations(title = "Track themes", read_only_hint = true)
     )]
@@ -2916,7 +3303,7 @@ impl TabMcp {
     )]
     async fn tuxguitar_hook_check(
         &self,
-        params: Parameters<RiffDnaParams>,
+        params: Parameters<HookCheckParams>,
     ) -> Result<String, ErrorData> {
         let Parameters(p) = params;
         let track_number = p.track_number;
@@ -3330,8 +3717,34 @@ impl TabMcp {
         params: Parameters<RiffDnaParams>,
     ) -> Result<String, ErrorData> {
         let Parameters(p) = params;
-        let track_number = p.track_number;
-        let (from, to) = (p.from_measure, p.to_measure);
+        let bank_path = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".tuxguitar-mcp")
+            .join("dna_bank.jsonl");
+        if p.list_bank {
+            let listing = std::fs::read_to_string(&bank_path).unwrap_or_default();
+            if listing.trim().is_empty() {
+                return Ok("DNA bank is empty - extract with riff_dna save_as=<name>.".into());
+            }
+            let mut out = String::from("DNA BANK (saved riff identities):\n");
+            for line in listing.lines() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    out.push_str(&format!(
+                        "--- {} ---\n{}\n",
+                        v.get("name").and_then(|n| n.as_str()).unwrap_or("?"),
+                        v.get("card").and_then(|c| c.as_str()).unwrap_or(""),
+                    ));
+                }
+            }
+            return Ok(out);
+        }
+        let (Some(track_number), Some(from), Some(to)) =
+            (p.track_number, p.from_measure, p.to_measure)
+        else {
+            return Err(ErrorData::invalid_params(
+                "track_number, from_measure and to_measure are required (or pass list_bank=true)",
+                None,
+            ));
+        };
         if from == 0 || to < from || to - from + 1 > MAX_MEASURES_PER_READ {
             return Err(ErrorData::invalid_params("invalid range", None));
         }
@@ -3456,7 +3869,7 @@ impl TabMcp {
             })
             .collect();
 
-        Ok(format!(
+        let card = format!(
             "RIFF DNA (track {track_number} \"{}\", measures {from}-{to}):\n\
              Motif: interval pattern {:?} (covers {:.0}% of the line)\n\
              Rhythm cell: {} | syncopation {:.0}% | groove {:.0}%\n\
@@ -3488,7 +3901,24 @@ impl TabMcp {
             },
             report.velocity_mean,
             report.harmonic_rhythm * 100.0,
-        ))
+        );
+        if let Some(name) = &p.save_as {
+            let entry = serde_json::json!({ "name": name, "card": card });
+            if let Some(parent) = bank_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            use std::io::Write as _;
+            let saved = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&bank_path)
+                .and_then(|mut f| writeln!(f, "{entry}"));
+            return Ok(match saved {
+                Ok(()) => format!("{card}\nSaved to the DNA bank as \"{name}\"."),
+                Err(e) => format!("{card}\nWARNING: could not save to the DNA bank: {e}"),
+            });
+        }
+        Ok(card)
     }
 
     #[tool(
@@ -3929,6 +4359,8 @@ enum GenerateKind {
     Bassline,
     Harmony,
     Drums,
+    Counterline,
+    InterlockDrums,
 }
 
 impl TabMcp {
@@ -4064,8 +4496,45 @@ impl TabMcp {
                     None::<&str>,
                 )
             }
+            GenerateKind::Counterline => {
+                let (measures, description) = tabmcp_theory::generation::generate_counterline(
+                    &range.measures,
+                    &source_tuning,
+                    max_fret,
+                )
+                .map_err(|e| ErrorData::invalid_params(e, None))?;
+                let strings: Vec<tabmcp_model::StringTuning> = track.strings.clone();
+                (
+                    "Lead Guitar (AI)".to_string(),
+                    strings,
+                    measures,
+                    description,
+                    None::<&str>,
+                )
+            }
+            GenerateKind::InterlockDrums => {
+                let (measures, description) =
+                    tabmcp_theory::generation::generate_interlock_drums(
+                        &range.measures,
+                        &source_tuning,
+                    )
+                    .map_err(|e| ErrorData::invalid_params(e, None))?;
+                let strings: Vec<tabmcp_model::StringTuning> = (1..=6)
+                    .map(|number| tabmcp_model::StringTuning {
+                        number,
+                        open_pitch: 0,
+                    })
+                    .collect();
+                (
+                    "Drums (AI)".to_string(),
+                    strings,
+                    measures,
+                    description,
+                    None::<&str>,
+                )
+            }
         };
-        let percussion = matches!(kind, GenerateKind::Drums);
+        let percussion = matches!(kind, GenerateKind::Drums | GenerateKind::InterlockDrums);
         let note_count = count_notes(&generated);
 
         if !p.confirm {

@@ -150,10 +150,44 @@ public class MeasureReader {
 			}
 			dto.add("harmonic", harmonic);
 		}
-		addFlag(dto, "grace", effect.isGrace());
-		addFlag(dto, "trill", effect.isTrill());
-		addFlag(dto, "tremoloPicking", effect.isTremoloPicking());
+		if (effect.isGrace() && effect.getGrace() != null) {
+			JsonObject grace = new JsonObject();
+			grace.addProperty("fret", effect.getGrace().getFret());
+			grace.addProperty("duration", effect.getGrace().getDuration());
+			if (effect.getGrace().isOnBeat()) {
+				grace.addProperty("onBeat", true);
+			}
+			if (effect.getGrace().isDead()) {
+				grace.addProperty("dead", true);
+			}
+			grace.addProperty("transition", graceTransitionName(effect.getGrace().getTransition()));
+			dto.add("grace", grace);
+		}
+		if (effect.isTrill() && effect.getTrill() != null) {
+			JsonObject trill = new JsonObject();
+			trill.addProperty("fret", effect.getTrill().getFret());
+			trill.addProperty("speed", effect.getTrill().getDuration().getValue());
+			dto.add("trill", trill);
+		}
+		if (effect.isTremoloPicking() && effect.getTremoloPicking() != null) {
+			JsonObject tremolo = new JsonObject();
+			tremolo.addProperty("speed", effect.getTremoloPicking().getDuration().getValue());
+			dto.add("tremoloPicking", tremolo);
+		}
 		return dto;
+	}
+
+	private static String graceTransitionName(int transition) {
+		switch (transition) {
+			case app.tuxguitar.song.models.effects.TGEffectGrace.TRANSITION_SLIDE:
+				return "slide";
+			case app.tuxguitar.song.models.effects.TGEffectGrace.TRANSITION_BEND:
+				return "bend";
+			case app.tuxguitar.song.models.effects.TGEffectGrace.TRANSITION_HAMMER:
+				return "hammer";
+			default:
+				return "none";
+		}
 	}
 
 	private static void addFlag(JsonObject dto, String name, boolean value) {

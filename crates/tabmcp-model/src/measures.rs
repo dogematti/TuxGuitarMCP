@@ -84,8 +84,30 @@ pub struct BendEffect {
 /// Accept both the legacy boolean form (`"harmonic": true`) and the
 /// parameterized object form on the wire.
 mod effect_compat {
-    use super::{BendEffect, HarmonicEffect};
+    use super::{BendEffect, GraceEffect, HarmonicEffect, TremoloPickingEffect, TrillEffect};
     use serde::{Deserialize, Deserializer};
+
+    macro_rules! bool_or_full {
+        ($name:ident, $ty:ty) => {
+            pub fn $name<'de, D: Deserializer<'de>>(d: D) -> Result<Option<$ty>, D::Error> {
+                #[derive(Deserialize)]
+                #[serde(untagged)]
+                enum Raw {
+                    Legacy(bool),
+                    Full($ty),
+                }
+                Ok(Option::<Raw>::deserialize(d)?.and_then(|raw| match raw {
+                    Raw::Legacy(true) => Some(<$ty>::default()),
+                    Raw::Legacy(false) => None,
+                    Raw::Full(v) => Some(v),
+                }))
+            }
+        };
+    }
+
+    bool_or_full!(grace, GraceEffect);
+    bool_or_full!(trill, TrillEffect);
+    bool_or_full!(tremolo_picking, TremoloPickingEffect);
 
     pub fn harmonic<'de, D: Deserializer<'de>>(d: D) -> Result<Option<HarmonicEffect>, D::Error> {
         #[derive(Deserialize)]
@@ -165,12 +187,103 @@ pub struct NoteEffects {
         skip_serializing_if = "Option::is_none"
     )]
     pub harmonic: Option<HarmonicEffect>,
+    #[serde(
+        default,
+        deserialize_with = "effect_compat::grace",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub grace: Option<GraceEffect>,
+    #[serde(
+        default,
+        deserialize_with = "effect_compat::trill",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub trill: Option<TrillEffect>,
+    #[serde(
+        default,
+        deserialize_with = "effect_compat::tremolo_picking",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tremolo_picking: Option<TremoloPickingEffect>,
+}
+
+/// A trill: rapid alternation with a second fret. `fret` 0 means "auto"
+/// (the bridge picks a whole tone above the note); `speed` is the
+/// alternation subdivision (8, 16 or 32; default 32).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrillEffect {
+    #[serde(default)]
+    pub fret: u32,
+    #[serde(default = "default_trill_speed")]
+    pub speed: u32,
+}
+
+impl Default for TrillEffect {
+    fn default() -> Self {
+        Self { fret: 0, speed: 32 }
+    }
+}
+
+fn default_trill_speed() -> u32 {
+    32
+}
+
+/// Tremolo picking: the note is repicked at `speed` (8, 16 or 32 =
+/// eighths, sixteenths, thirty-seconds; default 16).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TremoloPickingEffect {
+    #[serde(default = "default_tremolo_speed")]
+    pub speed: u32,
+}
+
+impl Default for TremoloPickingEffect {
+    fn default() -> Self {
+        Self { speed: 16 }
+    }
+}
+
+fn default_tremolo_speed() -> u32 {
+    16
+}
+
+/// A grace note before (or on) the beat. `fret` absent means "auto" (two
+/// frets below the note). `duration`: 1 = 64th, 2 = 32nd (default),
+/// 3 = 16th. `transition`: "none", "slide", "bend" or "hammer" (default).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GraceEffect {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fret: Option<u32>,
+    #[serde(default = "default_grace_duration")]
+    pub duration: u32,
     #[serde(default, skip_serializing_if = "is_false")]
-    pub grace: bool,
+    pub on_beat: bool,
+    #[serde(default = "default_grace_transition")]
+    pub transition: String,
     #[serde(default, skip_serializing_if = "is_false")]
-    pub trill: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub tremolo_picking: bool,
+    pub dead: bool,
+}
+
+impl Default for GraceEffect {
+    fn default() -> Self {
+        Self {
+            fret: None,
+            duration: 2,
+            on_beat: false,
+            transition: "hammer".into(),
+            dead: false,
+        }
+    }
+}
+
+fn default_grace_duration() -> u32 {
+    2
+}
+
+fn default_grace_transition() -> String {
+    "hammer".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

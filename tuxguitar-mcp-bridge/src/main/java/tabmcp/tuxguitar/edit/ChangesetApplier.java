@@ -215,11 +215,11 @@ public class ChangesetApplier {
 		note.setValue(wire.has("fret") ? wire.get("fret").getAsInt() : 0);
 		note.setVelocity(wire.has("velocity") ? wire.get("velocity").getAsInt() : TGVelocities.DEFAULT);
 		note.setTiedNote(wire.has("tied") && wire.get("tied").getAsBoolean());
-		note.setEffect(this.effects(wire.getAsJsonObject("effects"), factory));
+		note.setEffect(this.effects(wire.getAsJsonObject("effects"), factory, note.getValue()));
 		return note;
 	}
 
-	private TGNoteEffect effects(JsonObject wire, TGFactory factory) {
+	private TGNoteEffect effects(JsonObject wire, TGFactory factory, int noteFret) {
 		TGNoteEffect effect = factory.newEffect();
 		if (wire == null) {
 			return effect;
@@ -281,9 +281,82 @@ public class ChangesetApplier {
 			effect.setBend(tgBend);
 		}
 
-		// Remaining complex effects (grace, trill, tremolo picking/bar) still
-		// arrive as presence flags and are not applied yet.
+		// Parameterized articulations (since plugin 0.8.0). Each accepts the
+		// legacy boolean form (true = sensible default) or a parameter object.
+		JsonElement tremolo = wire.get("tremoloPicking");
+		if (isPresent(tremolo)) {
+			app.tuxguitar.song.models.effects.TGEffectTremoloPicking tgTremolo =
+				factory.newEffectTremoloPicking();
+			int speed = (tremolo.isJsonObject() && tremolo.getAsJsonObject().has("speed"))
+				? tremolo.getAsJsonObject().get("speed").getAsInt() : 16;
+			TGDuration tremoloDuration = factory.newDuration();
+			tremoloDuration.setValue(clampSpeed(speed));
+			tgTremolo.setDuration(tremoloDuration);
+			effect.setTremoloPicking(tgTremolo);
+		}
+
+		JsonElement trill = wire.get("trill");
+		if (isPresent(trill)) {
+			app.tuxguitar.song.models.effects.TGEffectTrill tgTrill = factory.newEffectTrill();
+			int fret = (trill.isJsonObject() && trill.getAsJsonObject().has("fret"))
+				? trill.getAsJsonObject().get("fret").getAsInt() : 0;
+			// fret 0 = auto: trill a whole tone above the note.
+			tgTrill.setFret(fret > 0 ? fret : noteFret + 2);
+			int speed = (trill.isJsonObject() && trill.getAsJsonObject().has("speed"))
+				? trill.getAsJsonObject().get("speed").getAsInt() : 32;
+			TGDuration trillDuration = factory.newDuration();
+			trillDuration.setValue(clampSpeed(speed));
+			tgTrill.setDuration(trillDuration);
+			effect.setTrill(tgTrill);
+		}
+
+		JsonElement grace = wire.get("grace");
+		if (isPresent(grace)) {
+			app.tuxguitar.song.models.effects.TGEffectGrace tgGrace = factory.newEffectGrace();
+			JsonObject g = grace.isJsonObject() ? grace.getAsJsonObject() : null;
+			int fret = (g != null && g.has("fret"))
+				? g.get("fret").getAsInt() : Math.max(0, noteFret - 2);
+			tgGrace.setFret(fret);
+			int duration = (g != null && g.has("duration")) ? g.get("duration").getAsInt() : 2;
+			tgGrace.setDuration(Math.max(1, Math.min(3, duration)));
+			tgGrace.setOnBeat(g != null && g.has("onBeat") && g.get("onBeat").getAsBoolean());
+			tgGrace.setDead(g != null && g.has("dead") && g.get("dead").getAsBoolean());
+			String transition = (g != null && g.has("transition"))
+				? g.get("transition").getAsString() : "hammer";
+			tgGrace.setTransition(graceTransition(transition));
+			tgGrace.setDynamic(TGVelocities.DEFAULT);
+			effect.setGrace(tgGrace);
+		}
 		return effect;
+	}
+
+	/** True when the wire value asks for the effect (true or an object). */
+	private static boolean isPresent(JsonElement element) {
+		if (element == null || element.isJsonNull()) {
+			return false;
+		}
+		if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isBoolean()) {
+			return element.getAsBoolean();
+		}
+		return element.isJsonObject();
+	}
+
+	/** Speeds map to duration values; only 8/16/32 make musical sense. */
+	private static int clampSpeed(int speed) {
+		return (speed == 8 || speed == 16 || speed == 32) ? speed : 16;
+	}
+
+	private static int graceTransition(String name) {
+		switch (name) {
+			case "slide":
+				return app.tuxguitar.song.models.effects.TGEffectGrace.TRANSITION_SLIDE;
+			case "bend":
+				return app.tuxguitar.song.models.effects.TGEffectGrace.TRANSITION_BEND;
+			case "none":
+				return app.tuxguitar.song.models.effects.TGEffectGrace.TRANSITION_NONE;
+			default:
+				return app.tuxguitar.song.models.effects.TGEffectGrace.TRANSITION_HAMMER;
+		}
 	}
 
 	private static boolean flag(JsonObject wire, String name) {

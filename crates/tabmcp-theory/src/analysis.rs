@@ -32,7 +32,8 @@ pub struct ScaleCandidate {
 }
 
 /// (name, semitone offsets from root)
-const SCALES: &[(&str, &[u8])] = &[
+/// The full scale catalog (name, semitone steps from the root).
+pub const SCALES: &[(&str, &[u8])] = &[
     ("major", &[0, 2, 4, 5, 7, 9, 11]),
     ("natural minor", &[0, 2, 3, 5, 7, 8, 10]),
     ("harmonic minor", &[0, 2, 3, 5, 7, 8, 11]),

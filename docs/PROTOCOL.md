@@ -131,8 +131,18 @@ Parameterized effects (since plugin 0.4.1):
   applies a standard full-tone bend (0,0)→(6,2)→(12,2).
 - Readers must also accept the legacy boolean form (`"harmonic": true` =
   natural harmonic, `"bend": true` = standard bend).
-- Still presence flags (not yet applied on write): grace, trill,
-  tremoloPicking, tremoloBar.
+
+Parameterized articulations (since plugin 0.8.0) - each accepts `true`
+(sensible default) or a parameter object, on read and write:
+- `"tremoloPicking": { "speed": 8|16|32 }` - repick subdivision
+  (default 16).
+- `"trill": { "fret": <n>, "speed": 8|16|32 }` - fret 0 or absent means
+  "a whole tone above the note"; speed defaults to 32.
+- `"grace": { "fret": <n>, "duration": 1|2|3, "onBeat": bool,
+  "transition": "none"|"slide"|"bend"|"hammer", "dead": bool }` - fret
+  absent means "two frets below the note"; duration 1 = 64th, 2 = 32nd
+  (default), 3 = 16th; transition defaults to hammer.
+- Still a presence flag (not applied on write): tremoloBar.
 
 Errors: `E_NO_DOCUMENT`, `E_INVALID_RANGE`.
 

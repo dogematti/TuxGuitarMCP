@@ -84,6 +84,29 @@ journeys ("calm, uneasy, aggressive, victorious").
 - style_match: measured characteristics ranked against every rubric -
   "what makes this sound like death metal" without touching band riffs.
 
+### Complexity engines (the batch after the intelligence tools)
+
+- Rhythm-cell catalog: 16 named cells (gallop, reverse-gallop, herta,
+  tresillo, hemiola, triplet-8ths, quintuplet, dotted-8ths, rests, ...)
+  with exact tick patterns, dots and tuplets - rhythm as a compositional
+  unit. Spelled onto measures without straddling barlines.
+- generate_riff: constraint-guided beam search. Phase 1 fills each bar
+  with cells (density window, syncopation window, accent coverage);
+  phase 2 assigns pitches from the scale-in-register pool (roots on
+  accents, stepwise motion with b2/tritone spice, bounded repeat runs,
+  motif echo of bar one). AABA' form; velocities and palm mutes shaped;
+  fingered by the optimizer. Deterministic.
+- rebar: pour a passage across a different meter structure - barlines
+  move, notes keep their flow (set_time_signature first, then rebar).
+- generate_counterline: answering melody in the source's gaps, contrary
+  motion, consonant on strong beats, an octave up.
+- generate_interlock: drums derived from the riff (kick in unison with
+  its accents, backbeat snare in any meter, 8th hats).
+- DNA bank: riff_dna save_as writes identity cards to
+  ~/.tuxguitar-mcp/dna_bank.jsonl; list_bank recalls them in any session.
+- Write-side articulations (plugin 0.8.0): tremolo picking, trills and
+  grace notes with parameters (see PROTOCOL.md).
+
 ### Prompts
 
 compose (style/key/bars), refine (N AI Ear passes), band (five
@@ -131,9 +154,11 @@ with their own tools, vote, apply the winners).
 ## 5. What remains, prioritized
 
 Near (mechanical): revision-bump coalescing (Java events); tremolo-bar
-and grace parameters on write; per-section evaluate for ALL metrics
-(currently groove only); technique-budget enforcement (idea 7); generator
-reason lines (idea 9).
+curves on write (grace/trill/tremolo-picking shipped in 0.8.0);
+per-section evaluate for ALL metrics (currently groove only);
+technique-budget enforcement (idea 7); generator reason lines (idea 9);
+DNA-bank-driven generation bias (feed saved cards into generate_riff
+constraints).
 
 Middle (design): riff genealogy (named checkpoints and branch trees, idea
 11); chord-progression planner (name a progression, get voicings per

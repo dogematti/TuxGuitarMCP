@@ -51,17 +51,17 @@ matching** ("what makes this sound like death metal?"), genre **blends**
 ("60% death metal, 40% doom"), and **emotion targets** ("calm, uneasy,
 aggressive, victorious" checked against the measured tension curve).
 
-## Tool surface (48 tools + 3 prompts)
+## Tool surface (52 tools + 3 prompts)
 
 | Area | Tools |
 |---|---|
 | Status & reading | `get_bridge_status`, `get_score_summary`, `get_measures`, `get_selection` |
 | AI Ear | `evaluate` (full scorecard; optional `style` targets, `tension_target` arcs, `emotion_target` journeys), `render_and_listen` (full mix + per-measure levels), `listen_stems` (per track, with auto-prescriptions) |
-| Composition intelligence | `riff_dna` (motif / rhythm cell / scale / techniques / energy identity), `evolve_riff` (N-generation mutation hill-climb, AI Ear fitness), `track_themes` (motif memory across sections + call-and-response), `hook_check` (memorability gate: pass or rejected with reasons), `check_realism` (impossible or awkward guitar writing), `analyze_difficulty` (1-10 with reasons, fatigue model, picking simulation), `producer_notes` (arrangement suggestions), `style_match` (which styles the music actually resembles) |
+| Composition intelligence | `generate_riff` (constraint-guided beam search: rhythm-cell alphabet, scale pitch space, accent/kick unison, syncopation window, AABA' form - deterministic), `riff_dna` (motif / rhythm cell / scale / techniques / energy identity; `save_as` builds a personal DNA bank), `evolve_riff` (N-generation mutation hill-climb, AI Ear fitness), `track_themes` (motif memory across sections + call-and-response), `hook_check` (memorability gate: pass or rejected with reasons), `check_realism` (impossible or awkward guitar writing), `analyze_difficulty` (1-10 with reasons, fatigue model, picking simulation), `producer_notes` (arrangement suggestions), `style_match` (which styles the music actually resembles) |
 | Analysis | `analyze_arrangement`, `detect_key_and_scale` (44-scale catalog incl. phrygian dominant, hirajoshi, ...), `detect_chords`, `explain_selection`, `style_guide` (16-genre rubrics: scales, tuning, meters, sections, mood, difficulty, avoid-list, evaluation targets, instrument roles; blend syntax for genre crossover) |
-| Writing | `replace_measures` (chords, tuplets, two voices, pinch harmonics, bend curves), `transpose`, `humanize`, `copy_measures`, `vary_riff` (9 transforms: displace, retrograde, invert, octave, augment, diminish, pedal-tone fill, polymetric regroup, dynamics swap), `import_midi` (MIDI -> optimized tab) |
+| Writing | `replace_measures` (chords, tuplets, two voices, pinch harmonics, bend curves, tremolo picking, trills, grace notes), `transpose`, `humanize`, `copy_measures`, `vary_riff` (9 transforms: displace, retrograde, invert, octave, augment, diminish, pedal-tone fill, polymetric regroup, dynamics swap), `rebar` (pour a riff across different time signatures - barlines move, notes keep their flow), `import_midi` (MIDI -> optimized tab) |
 | Fingering | `optimize_fingering` — chord-aware DP with explanations, fret-range constraints, cost presets (`metal`) |
-| Generation | `generate_bassline` (root-anchor detection, soundfont-safe register), `generate_harmony` (3rds/6ths, any catalog scale), `generate_drums` (styles: rock, metal-gallop, punk, halftime, blast, d-beat; meter-aware; `target_track` for per-section grooves) |
+| Generation | `generate_bassline` (root-anchor detection, soundfont-safe register), `generate_harmony` (3rds/6ths, any catalog scale), `generate_counterline` (answering melody in the riff's gaps, contrary motion, consonant on strong beats), `generate_drums` (styles: rock, metal-gallop, punk, halftime, blast, d-beat; meter-aware; `target_track` for per-section grooves), `generate_interlock` (drums derived from the riff itself: kick in unison with its accents) |
 | Structure | `create_track` (presets incl. 7-string A standard, bass clef, percussion), `change_tuning`, `set_tempo`, `set_time_signature` (odd meters), `set_key_signature`, `insert_measures`, `delete_measures`, `set_repeat` (loops), `set_marker` |
 | Transport & practice | `play`, `play_from`, `stop`, `toggle_metronome`, `toggle_count_in` |
 | Files | `save_copy`, `export` (multitrack MIDI, Guitar Pro, ...) |

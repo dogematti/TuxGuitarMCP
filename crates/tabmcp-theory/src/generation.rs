@@ -636,10 +636,336 @@ pub fn generate_drums(
     Ok((measures, description))
 }
 
+/// Generate a counterline: an answering melody that lives in the SOURCE's
+/// gaps, an octave up, moving contrary to the source and landing on
+/// consonances at strong beats. Two interlocking lines instead of one.
+pub fn generate_counterline(
+    source: &[Measure],
+    source_tuning: Tuning,
+    max_fret: u32,
+) -> Result<(Vec<Measure>, String), String> {
+    let all = onsets(source, source_tuning);
+    if all.is_empty() {
+        return Err("the source passage contains no notes to answer".into());
+    }
+    let lengths = measure_lengths(source);
+    let highest_open = source_tuning.iter().map(|&(_, p)| p).max().unwrap_or(64);
+    let ceiling = highest_open.saturating_add(max_fret as u8);
+
+    // Pitch material: the source's own pitch classes (diatonic to it).
+    let mut pcs: Vec<u8> = all.iter().map(|o| o.pitch % 12).collect();
+    pcs.sort_unstable();
+    pcs.dedup();
+
+    let mut notes: Vec<(usize, u64, Duration, u8, u32)> = Vec::new();
+    let mut pitches: Vec<u8> = Vec::new();
+    let eighth = Duration {
+        value: 8,
+        dotted: false,
+        double_dotted: false,
+        tuplet: Tuplet { enters: 1, times: 1 },
+    };
+    let quarter = Duration {
+        value: 4,
+        ..eighth.clone()
+    };
+
+    let mut gap_count = 0usize;
+    for (mi, &len) in lengths.iter().enumerate() {
+        let in_measure: Vec<&Onset> = all.iter().filter(|o| o.measure_index == mi).collect();
+        if in_measure.is_empty() {
+            continue;
+        }
+        let mean = in_measure.iter().map(|o| o.pitch as f64).sum::<f64>()
+            / in_measure.len() as f64;
+        let root_pc = in_measure.iter().map(|o| o.pitch).min().unwrap_or(0) % 12;
+        let target_center = ((mean as u8).saturating_add(12)).min(ceiling.saturating_sub(3));
+
+        // Free 8th slots: nothing sounding within a 16th either side.
+        let slots: Vec<u64> = (0..len / 480)
+            .map(|k| k * 480)
+            .filter(|&slot| !in_measure.iter().any(|o| o.offset.abs_diff(slot) < 240))
+            .collect();
+        // Merge consecutive slots into gap runs.
+        let mut runs: Vec<(u64, usize)> = Vec::new();
+        for &slot in &slots {
+            match runs.last_mut() {
+                Some((start, count)) if *start + *count as u64 * 480 == slot => *count += 1,
+                _ => runs.push((slot, 1)),
+            }
+        }
+        for &(start, count) in &runs {
+            gap_count += 1;
+            // Source direction around the gap: answer moves the other way.
+            let before = in_measure.iter().filter(|o| o.offset < start).last();
+            let after = in_measure.iter().find(|o| o.offset > start);
+            let source_dir: i16 = match (before, after) {
+                (Some(b), Some(a)) => (a.pitch as i16 - b.pitch as i16).signum(),
+                _ => 1,
+            };
+            let step: i16 = -source_dir * 2;
+            let prev = pitches.last().copied().unwrap_or(target_center);
+            let strong = start % 960 == 0;
+            let candidate = (prev as i16 + step).clamp(40, ceiling as i16) as u8;
+            // Snap to the pitch material; on strong beats require a
+            // consonance against the measure root (3rd/4th/5th/6th).
+            let consonant = [3u8, 4, 5, 7, 8, 9];
+            let pick = (0..=12)
+                .flat_map(|d| [candidate.saturating_add(d), candidate.saturating_sub(d)])
+                .find(|p| {
+                    pcs.contains(&(p % 12))
+                        && *p >= 40
+                        && *p <= ceiling
+                        && (!strong || consonant.contains(&((p + 24 - root_pc) % 12)))
+                })
+                .unwrap_or(candidate);
+            let duration = if count >= 2 { quarter.clone() } else { eighth.clone() };
+            notes.push((
+                mi,
+                start,
+                duration,
+                pick,
+                86 + ((notes.len() * 5) % 9) as u32,
+            ));
+            pitches.push(pick);
+        }
+    }
+    if notes.is_empty() {
+        return Err(
+            "the source leaves no gaps to answer in - thin it out or write the line \
+             into voice 1 manually"
+                .into(),
+        );
+    }
+    let fingering = crate::fingering::optimize_monophonic(
+        &pitches,
+        source_tuning,
+        max_fret,
+        &crate::fingering::CostModel::default(),
+    )
+    .map_err(|bad| format!("counterline pitches unplayable at indices {bad:?}"))?;
+    let measures = build_measures(source, &notes, &fingering.path);
+    let description = format!(
+        "counterline answering in {gap_count} gap(s), contrary motion, consonant on \
+         strong beats, {} notes an octave above the source",
+        notes.len()
+    );
+    Ok((measures, description))
+}
+
+/// Generate interlocked drums FROM the guitar riff: kick doubles the
+/// source's accents in unison, snare holds the backbeat, hats keep the
+/// 8th grid. The rhythm section is derived, not templated.
+pub fn generate_interlock_drums(
+    source: &[Measure],
+    source_tuning: Tuning,
+) -> Result<(Vec<Measure>, String), String> {
+    let all = onsets(source, source_tuning);
+    if all.is_empty() {
+        return Err("the source passage contains no notes to lock onto".into());
+    }
+    let lengths = measure_lengths(source);
+    let mut measures = Vec::with_capacity(source.len());
+    let mut unison_kicks = 0usize;
+    for (mi, template_measure) in source.iter().enumerate() {
+        let len = lengths.get(mi).copied().unwrap_or(3840);
+        let in_measure: Vec<&Onset> = all.iter().filter(|o| o.measure_index == mi).collect();
+        // Accents: loud onsets; fall back to the low chug floor.
+        let mut accents: Vec<u64> = in_measure
+            .iter()
+            .filter(|o| o.velocity >= 104)
+            .map(|o| o.offset)
+            .collect();
+        if accents.is_empty() {
+            let floor = in_measure.iter().map(|o| o.pitch).min().unwrap_or(0) + 2;
+            accents = in_measure
+                .iter()
+                .filter(|o| o.pitch <= floor)
+                .map(|o| o.offset)
+                .collect();
+        }
+        let mut slots: std::collections::BTreeMap<u64, Vec<(u32, u32)>> =
+            std::collections::BTreeMap::new();
+        slots.entry(0).or_default().push((DRUM_KICK, 105));
+        if mi == 0 {
+            slots.entry(0).or_default().push((DRUM_CRASH, 100));
+        }
+        for &offset in &accents {
+            if offset < len {
+                let hits = slots.entry(offset).or_default();
+                if !hits.iter().any(|&(k, _)| k == DRUM_KICK) {
+                    hits.push((DRUM_KICK, 110));
+                    unison_kicks += 1;
+                }
+            }
+        }
+        // Backbeat snare on beats 2 and 4 (any meter: every other beat).
+        let mut beat = 960u64;
+        let mut backbeat = true;
+        while beat < len {
+            if backbeat {
+                slots.entry(beat).or_default().push((DRUM_SNARE, 100));
+            }
+            backbeat = !backbeat;
+            beat += 960;
+        }
+        // Hat 8ths.
+        let mut slot = 0u64;
+        while slot < len {
+            let hits = slots.entry(slot).or_default();
+            if !hits.iter().any(|&(k, _)| k == DRUM_CRASH) {
+                hits.push((
+                    DRUM_HIHAT_CLOSED,
+                    if slot % 960 == 0 { 84 } else { 76 },
+                ));
+            }
+            slot += 480;
+        }
+        let beats = slots
+            .into_iter()
+            .map(|(offset, hits)| Beat {
+                start_tick: offset,
+                voices: vec![Voice {
+                    index: 0,
+                    duration: Duration {
+                        value: if offset % 480 == 0 { 8 } else { 16 },
+                        dotted: false,
+                        double_dotted: false,
+                        tuplet: Tuplet { enters: 1, times: 1 },
+                    },
+                    is_rest: false,
+                    notes: hits
+                        .into_iter()
+                        .map(|(key, velocity)| Note {
+                            string: match key {
+                                DRUM_KICK => 6,
+                                DRUM_SNARE => 4,
+                                DRUM_CRASH => 2,
+                                DRUM_RIDE => 3,
+                                _ => 1,
+                            },
+                            fret: key,
+                            velocity,
+                            tied: false,
+                            effects: NoteEffects::default(),
+                        })
+                        .collect(),
+                }],
+            })
+            .collect();
+        measures.push(Measure {
+            number: template_measure.number,
+            start_tick: 0,
+            key_signature: template_measure.key_signature,
+            beats,
+        });
+    }
+    let description = format!(
+        "interlocked drums: {unison_kicks} kick(s) in unison with the riff's accents, \
+         backbeat snare, 8th hats"
+    );
+    Ok((measures, description))
+}
+
 // Rests are intentionally omitted from generated measures: the bridge's
 // autoCompleteSilences fills every gap, so onsets are all we need.
 #[allow(dead_code)]
 fn _doc_anchor(_: Tuplet) {}
+
+#[cfg(test)]
+mod counter_tests {
+    use super::*;
+    use tabmcp_model::{Beat, Note, NoteEffects, Voice};
+
+    const STANDARD: &[(u32, u8)] = &[(1, 64), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+
+    fn sparse_riff() -> Vec<Measure> {
+        // Notes on beats 1 and 2 only; beats 3-4 are a gap.
+        vec![Measure {
+            number: 1,
+            start_tick: 960,
+            key_signature: 0,
+            beats: [0u64, 960]
+                .iter()
+                .map(|&off| Beat {
+                    start_tick: 960 + off,
+                    voices: vec![Voice {
+                        index: 0,
+                        duration: Duration {
+                            value: 4,
+                            dotted: false,
+                            double_dotted: false,
+                            tuplet: Tuplet { enters: 1, times: 1 },
+                        },
+                        is_rest: false,
+                        notes: vec![Note {
+                            string: 6,
+                            fret: if off == 0 { 0 } else { 3 },
+                            velocity: 110,
+                            tied: false,
+                            effects: NoteEffects::default(),
+                        }],
+                    }],
+                })
+                .collect(),
+        }]
+    }
+
+    #[test]
+    fn counterline_answers_in_the_gaps() {
+        let source = sparse_riff();
+        let (measures, description) =
+            generate_counterline(&source, STANDARD, 24).expect("generates");
+        assert!(description.contains("gap"), "{description}");
+        let offsets: Vec<u64> = measures[0].beats.iter().map(|b| b.start_tick).collect();
+        // Answers land in the free half of the bar (>= beat 3 area), never
+        // on the source onsets.
+        assert!(!offsets.is_empty());
+        assert!(offsets.iter().all(|&o| o != 0 && o != 960), "{offsets:?}");
+    }
+
+    #[test]
+    fn counterline_needs_gaps() {
+        // Wall of 8ths: no room to answer.
+        let mut source = sparse_riff();
+        source[0].beats = (0..8u64)
+            .map(|j| Beat {
+                start_tick: 960 + j * 480,
+                voices: source[0].beats[0].voices.clone(),
+            })
+            .collect();
+        assert!(generate_counterline(&source, STANDARD, 24).is_err());
+    }
+
+    #[test]
+    fn interlock_kicks_land_on_accents() {
+        let source = sparse_riff(); // velocity 110 = both onsets are accents
+        let (measures, description) =
+            generate_interlock_drums(&source, STANDARD).expect("generates");
+        assert!(description.contains("unison"), "{description}");
+        let kick_offsets: Vec<u64> = measures[0]
+            .beats
+            .iter()
+            .filter(|b| {
+                b.voices[0]
+                    .notes
+                    .iter()
+                    .any(|n| n.fret == DRUM_KICK)
+            })
+            .map(|b| b.start_tick)
+            .collect();
+        assert!(kick_offsets.contains(&0));
+        assert!(kick_offsets.contains(&960), "{kick_offsets:?}");
+        // Snare holds the backbeat.
+        let snare_offsets: Vec<u64> = measures[0]
+            .beats
+            .iter()
+            .filter(|b| b.voices[0].notes.iter().any(|n| n.fret == DRUM_SNARE))
+            .map(|b| b.start_tick)
+            .collect();
+        assert_eq!(snare_offsets, vec![960, 2880]);
+    }
+}
 
 #[cfg(test)]
 mod tests {
