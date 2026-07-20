@@ -7,7 +7,7 @@ to the score currently open in [TuxGuitar](https://tuxguitar.app). The AI can
 like a musician in the studio, not a one-shot generator.
 
 ![The embedded AI musician composing a groove metal arrangement live inside TuxGuitar](image.png)
-*The embedded chat (plugin 0.9.0) writing an 8-bar groove metal arrangement - riff, interlocked drums, bass - self-correcting with the AI Ear, then pressing play. One turn, inside TuxGuitar.*
+*The embedded chat writing a groove metal arrangement live inside TuxGuitar: quick-action templates, model picker, and the composition pipeline (generate_riff, hook_check, interlocked drums, bass) streaming in the studio transcript.*
 
 - **Rust service** (`crates/`): the MCP server, normalized score model,
   music-theory engine (scales, chords, fingering, generation, critique),
