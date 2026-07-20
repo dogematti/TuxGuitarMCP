@@ -36,26 +36,31 @@ the AI iterates —
 5. **Repeat**, narrating each pass — the undo stack is the version history
    (one Cmd+Z per pass)
 
-## Tool surface (30 tools)
+## Tool surface (38 tools + 2 prompts)
 
 | Area | Tools |
 |---|---|
 | Status & reading | `get_bridge_status`, `get_score_summary`, `get_measures`, `get_selection` |
-| Analysis | `evaluate` (AI Ear scorecard), `analyze_arrangement`, `detect_key_and_scale`, `detect_chords`, `explain_selection` |
-| Audio ear | `render_and_listen` (full mix), `listen_stems` (per track) |
-| Writing | `replace_measures` (notes, chords, tuplets, two voices, effects incl. `harmonic: {type: "pinch"}` and bend point-curves), `transpose`, `humanize` |
-| Fingering | `optimize_fingering` — chord-aware path search (candidates → cost model → dynamic programming) with "why this fingering" explanations and optional fret-range constraints |
-| Generation | `generate_bassline` (root-following, rhythm-locked, chromatic approaches), `generate_harmony` (diatonic 3rds/6ths), `generate_drums` (percussion channel, accents-locked) |
-| Structure | `create_track` (tuning presets incl. "7-string A standard", bass clef, percussion), `change_tuning`, `set_tempo`, `set_repeat` (loops), `set_marker` |
-| Transport & files | `play`, `play_from`, `stop`, `save_copy`, `export` (multitrack MIDI, Guitar Pro, ... via TuxGuitar's own writers) |
+| Analysis | `evaluate` (AI Ear scorecard), `analyze_arrangement`, `detect_key_and_scale` (44-scale catalog incl. phrygian dominant, hirajoshi, ...), `detect_chords`, `explain_selection` |
+| Audio ear | `render_and_listen` (full mix + per-measure levels), `listen_stems` (per track, with auto-prescriptions) |
+| Writing | `replace_measures` (chords, tuplets, two voices, pinch harmonics, bend curves), `transpose`, `humanize`, `copy_measures`, `import_midi` (MIDI -> optimized tab) |
+| Fingering | `optimize_fingering` — chord-aware DP with explanations, fret-range constraints, cost presets (`metal`) |
+| Generation | `generate_bassline` (root-anchor detection, soundfont-safe register), `generate_harmony` (3rds/6ths, any catalog scale), `generate_drums` (styles: rock, metal-gallop, punk, halftime, blast, d-beat; meter-aware; `target_track` for per-section grooves) |
+| Structure | `create_track` (presets incl. 7-string A standard, bass clef, percussion), `change_tuning`, `set_tempo`, `set_time_signature` (odd meters), `set_key_signature`, `insert_measures`, `delete_measures`, `set_repeat` (loops), `set_marker` |
+| Transport & practice | `play`, `play_from`, `stop`, `toggle_metronome`, `toggle_count_in` |
+| Files | `save_copy`, `export` (multitrack MIDI, Guitar Pro, ...) |
 | History | `undo`, `redo` |
+
+**MCP prompts** (one-click workflows): `compose` (style/key/bars -> full
+compose-and-refine session) and `refine` (N AI-Ear passes on the open score).
 
 (All tool names carry the `tuxguitar_` prefix.)
 
-Safety model: every mutating tool is **two-step** (preview → confirm bound
+Safety model: every mutating tool is **two-step** (preview -> confirm bound
 to the previewed revision), **revision-checked** (stale writes rejected),
 **atomic**, and **undoable** — including auto-appended measures and
-generated tracks.
+generated tracks. A golden wire-format fixture in CI guards the
+Rust<->Java protocol against accidental changes.
 
 ## Quickstart
 

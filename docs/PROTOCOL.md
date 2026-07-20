@@ -184,6 +184,23 @@ Errors: `E_NO_DOCUMENT`, `E_EDIT_FAILED`, `E_LOCKED`.
 ### undo / redo
 Result: `{ performed, newRevision }` — `performed: false` when the stack is empty.
 
-## Planned (not yet implemented)
+## Methods added since (plugin 0.4+..0.7)
 
-`play`/`play_selection`/`stop`, `create_track`, `change_tuning`.
+All follow the same conventions (auth first, camelCase, stable error codes):
+
+- `create_track { name, strings, clef?, percussion? }` — appended track,
+  black color, optional bass clef / percussion channel (bank 128)
+- `change_tuning { trackNumber, strings, expectedRevision? }`
+- `set_tempo { bpm, fromMeasure? }` (NOT undoable — app design)
+- `set_time_signature { measure, numerator, denominator, toEnd }`
+- `set_key_signature { trackNumber, measure, key, toEnd }`
+- `insert_measures { at, count }` / `delete_measures { from, count }`
+- `set_repeat { fromMeasure, toMeasure, repetitions }` (0 clears)
+- `set_marker { measure, title }` (empty title clears)
+- `play`, `play_from { measure }`, `stop`
+- `toggle_action { actionId }` — WHITELISTED: metronome / count-down only
+- `export_song { format }` — Save-As dialog pre-set to the format
+- `render_midi` — headless MIDI to ~/.tuxguitar-mcp/render.mid
+- `save_copy` — Save-As dialog
+
+`spike_edit` remains for diagnostics.
