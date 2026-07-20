@@ -1,9 +1,11 @@
 # TabMCP - Depth Analysis: Complexity, Styles, and What's Next
 
 Updated 2026-07-20 after three field sessions (E-minor demo,
-Phrygian/Hirajoshi piece, 20-bar structured song with 7/8), the
-cross-model riff battle (Claude vs Codex vs Gemini), and the two
-composition-intelligence batches that followed.
+Phrygian/Hirajoshi piece, 20-bar structured song with 7/8), TWO
+cross-model riff battles (round 1: Gemini won by ear; round 2 on the
+upgraded toolkit: Claude won by ear + judge panel, Codex best phrasing
+both times), the composition-intelligence batches, the complexity
+engines, player notes, and the embedded chat.
 
 ## 1. Where riff complexity actually comes from
 
@@ -106,6 +108,20 @@ journeys ("calm, uneasy, aggressive, victorious").
   ~/.tuxguitar-mcp/dna_bank.jsonl; list_bank recalls them in any session.
 - Write-side articulations (plugin 0.8.0): tremolo picking, trills and
   grace notes with parameters (see PROTOCOL.md).
+
+### Knowledge and embedding (the batches after the complexity engines)
+
+- Player notes: ~/.tuxguitar-mcp/styles/<style>.md and tuning-specific
+  <style>.<tuning-prefix>.md files served by style_guide (tuning
+  auto-detected from the open score); precedence tuning notes > base
+  notes > built-in rubric; a new file name defines a custom style.
+  The user's fretboard vocabulary teaches every AI client at once.
+- Embedded chat (plugin 0.9.0): Tools -> "TabMCP: AI Musician Chat"
+  opens a chat window inside TuxGuitar backed by headless Claude Code
+  turns (stream-json, strict inline MCP config, tuxguitar tools
+  auto-allowed, session continuity via --continue). Field-verified:
+  full 8-bar arrangement composed, self-corrected, and played back in
+  one turn from inside the TuxGuitar window.
 
 ### Prompts
 
