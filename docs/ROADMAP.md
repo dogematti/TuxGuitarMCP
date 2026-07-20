@@ -1,5 +1,59 @@
 # TabMCP Roadmap
 
+## Prioritized plan (2026-07-20, after the AI-Ear field tests)
+
+### P1 — Correctness under hard music (the current test will hit these)
+- **Meter awareness**: everything rhythm-side silently assumes 4/4 — drum
+  templates place hits on a fixed 8-eighth grid (a 3/4 or 7/8 measure would
+  reject or misplace hits), the bass fifth-walk window is hardcoded to
+  ticks 1920-2880, and snare backbeats assume beats 2/4. Fix: derive the
+  grid from each measure's actual time signature/length.
+- **set_time_signature tool**: djent/prog breakdowns change meter; today
+  only reading works. (TGChangeTimeSignatureAction exists app-side.)
+- **Key-signature writing**: the applier preserves but never SETS
+  measure.keySignature — modal sections can't notate their key.
+- **insert_measures / delete_measures tools**: the change-set primitives
+  exist in TuxGuitar (undo-wired actions verified); only bridge+tool
+  plumbing is missing.
+
+### P2 — Song-form workflow
+- **copy_measures**: duplicate a range to another location/track — song
+  forms (verse x2, chorus) currently force the client to resend content.
+- **MCP prompts**: ship 'compose-song', 'refine' (AI-Ear loop), 'practice'
+  as real MCP prompts instead of instruction text only.
+- **Golden .tg suite**: real files with odd meters, tuplets, ties, repeats,
+  both voices — checked-in expected JSON on both sides.
+
+### P3 — Expressiveness
+- **Full effect parameters on write**: grace (fret/duration), trill,
+  tremolo picking speed, tremolo-bar curves (read as flags today).
+- **Technique-aware fingering**: legato/slide transition discounts,
+  genre presets for the CostModel (metal = low compact positions).
+- **More drum styles**: blast beat, d-beat, triplet shuffle (the template
+  table makes each ~10 lines) + a style param for the bass generator
+  (root-fifth-octave patterns, kick-locked gallop).
+
+### P4 — AI Ear v3+
+- **Measure-aligned audio**: map render windows to measures so reports say
+  'measure 3 is where it gets muddy' (needs repeat-expansion-aware timing).
+- **Pass history**: evaluate keeps per-pass scores so trends are visible
+  ('groove 53% -> 71% -> 84%').
+- **Stem prescriptions**: turn stem findings into named fixes automatically
+  (e.g. silent-below-E2 -> 'transpose +12').
+
+### P5 — Platform
+- **Loop-practice transport**: loop a range at reduced tempo, step up per
+  pass (TuxGuitar has loop + tempo-percent modes; needs attribute
+  spelunking in TGTransportModeAction).
+- **MCP resources + elicitation**: subscribable score summary; in-client
+  confirmation instead of the two-call dance where supported.
+- **Headless mode**: Rust-side .tg reader/writer so analysis works without
+  TuxGuitar running (the original PLAN.md file-based vision).
+
+(Distribution/packaging intentionally skipped per user.)
+
+---
+
 Phases 0-6 are complete (see PLAN.md and git history): bridge, read/analysis,
 write path, transpose, tracks/tuning/playback, fingering optimizer.
 
