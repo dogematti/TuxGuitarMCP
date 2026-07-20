@@ -141,14 +141,7 @@ public class ChatDialog {
 		statusLayout.set(this.statusLabel, 1, 2, UITableLayout.ALIGN_LEFT,
 			UITableLayout.ALIGN_CENTER, true, false);
 
-		// Composer row: template picker + model picker.
-		UITableLayout pickerLayout = new UITableLayout(0f);
-		UIPanel pickerRow = uiFactory.createPanel(this.dialog, false);
-		pickerRow.setLayout(pickerLayout);
-		dialogLayout.set(pickerRow, 3, 1, UITableLayout.ALIGN_FILL,
-			UITableLayout.ALIGN_CENTER, true, false);
-
-		this.templateSelect = uiFactory.createDropDownSelect(pickerRow);
+		this.templateSelect = uiFactory.createDropDownSelect(statusRow);
 		for (String[] template : TEMPLATES) {
 			this.templateSelect.addItem(new UISelectItem<String>(template[0], template[1]));
 		}
@@ -162,29 +155,29 @@ public class ChatDialog {
 				}
 			}
 		});
-		pickerLayout.set(this.templateSelect, 1, 1, UITableLayout.ALIGN_FILL,
-			UITableLayout.ALIGN_CENTER, true, false);
+		statusLayout.set(this.templateSelect, 1, 3, UITableLayout.ALIGN_RIGHT,
+			UITableLayout.ALIGN_CENTER, false, false, 1, 1, 170f, null, null);
 
-		UILabel modelLabel = uiFactory.createLabel(pickerRow);
+		UILabel modelLabel = uiFactory.createLabel(statusRow);
 		modelLabel.setText("model:");
-		pickerLayout.set(modelLabel, 1, 2, UITableLayout.ALIGN_RIGHT,
+		statusLayout.set(modelLabel, 1, 4, UITableLayout.ALIGN_RIGHT,
 			UITableLayout.ALIGN_CENTER, false, false);
 
-		this.modelSelect = uiFactory.createDropDownSelect(pickerRow);
+		this.modelSelect = uiFactory.createDropDownSelect(statusRow);
 		this.modelSelect.addItem(new UISelectItem<String>("default", ""));
 		this.modelSelect.addItem(new UISelectItem<String>("fable 5", "claude-fable-5"));
 		this.modelSelect.addItem(new UISelectItem<String>("opus", "opus"));
 		this.modelSelect.addItem(new UISelectItem<String>("sonnet", "sonnet"));
 		this.modelSelect.addItem(new UISelectItem<String>("haiku", "haiku"));
 		this.modelSelect.setSelectedValue("");
-		pickerLayout.set(this.modelSelect, 1, 3, UITableLayout.ALIGN_RIGHT,
-			UITableLayout.ALIGN_CENTER, false, false);
+		statusLayout.set(this.modelSelect, 1, 5, UITableLayout.ALIGN_RIGHT,
+			UITableLayout.ALIGN_CENTER, false, false, 1, 1, 110f, null, null);
 
 		// Input row.
 		UITableLayout inputLayout = new UITableLayout(0f);
 		UIPanel inputRow = uiFactory.createPanel(this.dialog, false);
 		inputRow.setLayout(inputLayout);
-		dialogLayout.set(inputRow, 4, 1, UITableLayout.ALIGN_FILL,
+		dialogLayout.set(inputRow, 3, 1, UITableLayout.ALIGN_FILL,
 			UITableLayout.ALIGN_CENTER, true, false);
 
 		this.input = uiFactory.createTextArea(inputRow, true, false);
