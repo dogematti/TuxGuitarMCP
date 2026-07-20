@@ -54,6 +54,22 @@ pub struct CritiqueReport {
     pub velocity_mean: f64,
     /// Velocity standard deviation — near 0 means robotic dynamics.
     pub velocity_std: f64,
+    /// 0..1 weighted share of onsets off the strong beats (0 = metronomic,
+    /// on-quarter; 1 = nothing lands on a beat).
+    pub syncopation: f64,
+    /// Measures that are exact copies of an earlier measure.
+    pub literal_repeats: usize,
+    /// Measures that develop earlier material (same rhythm, new pitches — or
+    /// same interval line, new rhythm).
+    pub varied_repeats: usize,
+    /// Non-empty measures introducing new material (the first one counts).
+    pub fresh_measures: usize,
+    /// Per-measure tension 0..1 (density + dynamics + register + dissonance,
+    /// normalized within the range). Index 0 = first analyzed measure.
+    pub tension: Vec<f64>,
+    /// Root changes per measure boundary, 0..1 (0 = one pedal root
+    /// throughout, 1 = new bass root every measure).
+    pub harmonic_rhythm: f64,
 }
 
 /// Evaluate one track's material.
@@ -148,6 +164,146 @@ pub fn critique(measures: &[Measure], tuning: Tuning) -> CritiqueReport {
         / events.len() as f64)
         .sqrt();
 
+    // Syncopation: weight each onset by how far off the beat it lands.
+    // On a quarter (offset % 960 == 0) -> 0, on an offbeat 8th -> 0.5,
+    // finer positions -> 1.0.
+    let syncopation = events
+        .iter()
+        .map(|e| {
+            if e.offset % 960 == 0 {
+                0.0
+            } else if e.offset % 480 == 0 {
+                0.5
+            } else {
+                1.0
+            }
+        })
+        .sum::<f64>()
+        / events.len() as f64;
+
+    // Motif development: classify each non-empty measure against all earlier
+    // ones — literal copy, varied repeat (shared rhythm OR shared interval
+    // line), or fresh material.
+    #[derive(PartialEq)]
+    struct Signature {
+        rhythm: Vec<u64>,
+        pitches: Vec<u8>,
+        intervals: Vec<i16>,
+    }
+    let signatures: Vec<Option<Signature>> = (0..measures.len())
+        .map(|i| {
+            let in_measure: Vec<&Onset> =
+                events.iter().filter(|e| e.measure_index == i).collect();
+            if in_measure.is_empty() {
+                return None;
+            }
+            let pitches: Vec<u8> = in_measure.iter().map(|e| e.pitch).collect();
+            Some(Signature {
+                rhythm: in_measure.iter().map(|e| e.offset).collect(),
+                intervals: pitches
+                    .windows(2)
+                    .map(|p| p[1] as i16 - p[0] as i16)
+                    .collect(),
+                pitches,
+            })
+        })
+        .collect();
+    let (mut literal_repeats, mut varied_repeats, mut fresh_measures) = (0usize, 0usize, 0usize);
+    for (i, sig) in signatures.iter().enumerate() {
+        let Some(sig) = sig else { continue };
+        let earlier = signatures[..i].iter().flatten();
+        let mut best = 0u8; // 0 fresh, 1 varied, 2 literal
+        for other in earlier {
+            if sig == other {
+                best = 2;
+                break;
+            }
+            let shared_rhythm = sig.rhythm == other.rhythm && sig.pitches != other.pitches;
+            let shared_line = !sig.intervals.is_empty()
+                && sig.intervals == other.intervals
+                && sig.rhythm != other.rhythm;
+            if shared_rhythm || shared_line {
+                best = best.max(1);
+            }
+        }
+        match best {
+            2 => literal_repeats += 1,
+            1 => varied_repeats += 1,
+            _ => fresh_measures += 1,
+        }
+    }
+
+    // Tension curve: per-measure composite of density, dynamics, register,
+    // and dissonant melodic motion (semitones/tritones), normalized so the
+    // range's own extremes define 0..1.
+    let tension: Vec<f64> = {
+        // Two passes: gather raw tuples, then normalize each component.
+        let tuples: Vec<(f64, f64, f64, f64)> = {
+            let mut t = Vec::with_capacity(measures.len());
+            for i in 0..measures.len() {
+                let in_measure: Vec<&Onset> =
+                    events.iter().filter(|e| e.measure_index == i).collect();
+                if in_measure.is_empty() {
+                    t.push((0.0, 0.0, 0.0, 0.0));
+                    continue;
+                }
+                let density = in_measure.len() as f64;
+                let velocity = in_measure.iter().map(|e| e.velocity as f64).sum::<f64>()
+                    / in_measure.len() as f64;
+                let register = in_measure.iter().map(|e| e.pitch as f64).sum::<f64>()
+                    / in_measure.len() as f64;
+                let steps: Vec<i16> = in_measure
+                    .windows(2)
+                    .map(|p| (p[1].pitch as i16 - p[0].pitch as i16).abs() % 12)
+                    .collect();
+                let dissonance = if steps.is_empty() {
+                    0.0
+                } else {
+                    steps.iter().filter(|&&s| s == 1 || s == 6 || s == 11).count() as f64
+                        / steps.len() as f64
+                };
+                t.push((density, velocity, register, dissonance));
+            }
+            t
+        };
+        let norm = |get: fn(&(f64, f64, f64, f64)) -> f64, v: &(f64, f64, f64, f64)| {
+            let lo = tuples.iter().map(get).fold(f64::INFINITY, f64::min);
+            let hi = tuples.iter().map(get).fold(f64::NEG_INFINITY, f64::max);
+            if hi - lo < 1e-9 {
+                0.5
+            } else {
+                (get(v) - lo) / (hi - lo)
+            }
+        };
+        tuples
+            .iter()
+            .map(|t| {
+                0.35 * norm(|t| t.0, t)
+                    + 0.25 * norm(|t| t.1, t)
+                    + 0.2 * norm(|t| t.2, t)
+                    + 0.2 * norm(|t| t.3, t)
+            })
+            .collect()
+    };
+
+    // Harmonic rhythm: how often the lowest pitch class (the implied root)
+    // changes at measure boundaries.
+    let roots: Vec<u8> = (0..measures.len())
+        .filter_map(|i| {
+            events
+                .iter()
+                .filter(|e| e.measure_index == i)
+                .map(|e| e.pitch)
+                .min()
+                .map(|p| p % 12)
+        })
+        .collect();
+    let harmonic_rhythm = if roots.len() < 2 {
+        0.0
+    } else {
+        roots.windows(2).filter(|p| p[0] != p[1]).count() as f64 / (roots.len() - 1) as f64
+    };
+
     CritiqueReport {
         groove_consistency,
         density_range,
@@ -155,6 +311,12 @@ pub fn critique(measures: &[Measure], tuning: Tuning) -> CritiqueReport {
         top_motif,
         velocity_mean,
         velocity_std,
+        syncopation,
+        literal_repeats,
+        varied_repeats,
+        fresh_measures,
+        tension,
+        harmonic_rhythm,
     }
 }
 
@@ -170,6 +332,47 @@ pub fn describe(report: &CritiqueReport, track_label: &str) -> String {
         report.velocity_mean,
         report.velocity_std,
     );
+    out.push_str(&format!(
+        "  syncopation {:.0}%, development: {} literal / {} varied / {} fresh measures, \
+         root changes {:.0}%\n",
+        report.syncopation * 100.0,
+        report.literal_repeats,
+        report.varied_repeats,
+        report.fresh_measures,
+        report.harmonic_rhythm * 100.0,
+    ));
+    if report.tension.len() >= 4 {
+        let peak = report
+            .tension
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let mean = report.tension.iter().sum::<f64>() / report.tension.len() as f64;
+        let std = (report
+            .tension
+            .iter()
+            .map(|t| (t - mean).powi(2))
+            .sum::<f64>()
+            / report.tension.len() as f64)
+            .sqrt();
+        let curve: String = report
+            .tension
+            .iter()
+            .map(|&t| {
+                // 5-level sparkline of the tension curve
+                ['.', ':', '-', '=', '#'][((t * 4.999) as usize).min(4)]
+            })
+            .collect();
+        out.push_str(&format!(
+            "  tension curve [{curve}] peak at relative measure {}\n",
+            peak + 1
+        ));
+        if std < 0.08 {
+            out.push_str("  ISSUE: flat tension curve — no build or release; vary density/dynamics/register across the range\n");
+        }
+    }
     if !report.top_motif.is_empty() {
         out.push_str(&format!(
             "  motif: interval pattern {:?} recurs — develop or vary it deliberately\n",
@@ -181,6 +384,12 @@ pub fn describe(report: &CritiqueReport, track_label: &str) -> String {
     }
     if report.motif_repetition < 0.15 {
         out.push_str("  ISSUE: little repetition — the line may read as wandering\n");
+    }
+    if report.literal_repeats >= 2 && report.varied_repeats == 0 {
+        out.push_str(
+            "  ISSUE: copy-paste repetition — every repeat is literal; vary one \
+             (tuxguitar_vary_riff: displace, invert, pedal, regroup...)\n",
+        );
     }
     if report.velocity_std < 2.0 {
         out.push_str("  ISSUE: robotic dynamics — consider tuxguitar_humanize or accents\n");
@@ -296,6 +505,48 @@ mod tests {
             "gallop must read as consistent, got {}",
             report.groove_consistency
         );
+    }
+
+    #[test]
+    fn syncopation_scores_offbeat_material_higher() {
+        // Straight 8ths: two on the quarters (0.0) + two offbeat 8ths (0.5).
+        let eighths = vec![measure(1, &[(6, 0, 95), (6, 3, 95), (6, 5, 95), (5, 2, 95)])];
+        assert_eq!(critique(&eighths, STANDARD).syncopation, 0.25);
+        // Every onset pushed to a 16th position: maximally unmoored.
+        let mut off = eighths.clone();
+        for beat in &mut off[0].beats {
+            beat.start_tick += 240;
+        }
+        assert_eq!(critique(&off, STANDARD).syncopation, 1.0);
+    }
+
+    #[test]
+    fn motif_development_separates_literal_from_varied() {
+        let base = [(6, 0, 95), (6, 3, 95), (6, 5, 95), (5, 2, 95)];
+        let varied = [(6, 2, 95), (6, 5, 95), (6, 7, 95), (5, 4, 95)]; // same rhythm, new pitches
+        let measures = vec![measure(1, &base), measure(2, &base), measure(3, &varied)];
+        let report = critique(&measures, STANDARD);
+        assert_eq!(report.literal_repeats, 1);
+        assert_eq!(report.varied_repeats, 1);
+        assert_eq!(report.fresh_measures, 1);
+    }
+
+    #[test]
+    fn copy_paste_repetition_flags_as_issue() {
+        let base = [(6, 0, 95), (6, 3, 95), (6, 5, 95), (5, 2, 95)];
+        let measures = vec![measure(1, &base), measure(2, &base), measure(3, &base)];
+        let report = critique(&measures, STANDARD);
+        assert_eq!(report.literal_repeats, 2);
+        assert!(describe(&report, "T1").contains("copy-paste"));
+    }
+
+    #[test]
+    fn harmonic_rhythm_counts_root_changes() {
+        let a = [(6, 0, 95), (6, 3, 95)]; // root E
+        let b = [(6, 5, 95), (6, 8, 95)]; // root A
+        let measures = vec![measure(1, &a), measure(2, &b), measure(3, &a)];
+        let report = critique(&measures, STANDARD);
+        assert!((report.harmonic_rhythm - 1.0).abs() < 1e-9); // changes at every boundary
     }
 
     #[test]

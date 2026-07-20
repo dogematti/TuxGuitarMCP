@@ -1,6 +1,7 @@
 # TabMCP — an AI musician inside TuxGuitar
 
-TabMCP connects MCP-compatible AI clients (Claude Code, Claude Desktop, ...)
+TabMCP connects MCP-compatible AI clients (Claude Code, OpenAI Codex,
+Google Antigravity/Gemini, xAI Grok, Claude Desktop, ...)
 to the score currently open in [TuxGuitar](https://tuxguitar.app). The AI can
 **compose, arrange, listen to its own output, critique it, and revise** —
 like a musician in the studio, not a one-shot generator.
@@ -36,14 +37,14 @@ the AI iterates —
 5. **Repeat**, narrating each pass — the undo stack is the version history
    (one Cmd+Z per pass)
 
-## Tool surface (40 tools + 2 prompts)
+## Tool surface (41 tools + 2 prompts)
 
 | Area | Tools |
 |---|---|
 | Status & reading | `get_bridge_status`, `get_score_summary`, `get_measures`, `get_selection` |
-| Analysis | `evaluate` (AI Ear scorecard), `analyze_arrangement`, `detect_key_and_scale` (44-scale catalog incl. phrygian dominant, hirajoshi, ...), `detect_chords`, `explain_selection`, `style_guide` (15-genre composition recipes: scales, cells, techniques, signature devices) |
+| Analysis | `evaluate` (AI Ear scorecard: groove, syncopation, motif development, tension curve, harmonic rhythm, human-feel artifact check, pass-over-pass trend; optional per-style targets and tension-target arcs), `riff_dna` (extract a riff's musical identity — motif, rhythm cell, scale, techniques, energy — to evolve it without copying), `analyze_arrangement`, `detect_key_and_scale` (44-scale catalog incl. phrygian dominant, hirajoshi, ...), `detect_chords`, `explain_selection`, `style_guide` (16-genre rubrics: scales, tuning, meters, sections, mood, difficulty, avoid-list, evaluation targets) |
 | Audio ear | `render_and_listen` (full mix + per-measure levels), `listen_stems` (per track, with auto-prescriptions) |
-| Writing | `replace_measures` (chords, tuplets, two voices, pinch harmonics, bend curves), `transpose`, `humanize`, `copy_measures`, `vary_riff` (displacement/retrograde transforms), `import_midi` (MIDI -> optimized tab) |
+| Writing | `replace_measures` (chords, tuplets, two voices, pinch harmonics, bend curves), `transpose`, `humanize`, `copy_measures`, `vary_riff` (9 transforms: displace, retrograde, invert, octave, augment, diminish, pedal-tone fill, polymetric regroup, dynamics swap), `import_midi` (MIDI -> optimized tab) |
 | Fingering | `optimize_fingering` — chord-aware DP with explanations, fret-range constraints, cost presets (`metal`) |
 | Generation | `generate_bassline` (root-anchor detection, soundfont-safe register), `generate_harmony` (3rds/6ths, any catalog scale), `generate_drums` (styles: rock, metal-gallop, punk, halftime, blast, d-beat; meter-aware; `target_track` for per-section grooves) |
 | Structure | `create_track` (presets incl. 7-string A standard, bass clef, percussion), `change_tuning`, `set_tempo`, `set_time_signature` (odd meters), `set_key_signature`, `insert_measures`, `delete_measures`, `set_repeat` (loops), `set_marker` |
@@ -77,11 +78,47 @@ cp tuxguitar-mcp-bridge/target/tuxguitar-mcp-bridge.jar \
 # 2. Install the MCP server binary
 cargo install --path crates/tabmcp-server        # ~/.cargo/bin/tabmcp
 
-# 3. Register with your MCP client (once — updates are picked up on restart)
+# 3. Register with your MCP client — see below
+```
+
+### Register with your AI client
+
+TabMCP is client-agnostic: any MCP-capable agent can compose with it (we
+run riff battles between them). Register the same command everywhere —
+**`~/.cargo/bin/tabmcp serve`** over stdio:
+
+**Claude Code**
+```sh
 claude mcp add tuxguitar -- ~/.cargo/bin/tabmcp serve
 ```
 
-Start TuxGuitar, then in a fresh Claude session try:
+**OpenAI Codex CLI**
+```sh
+codex mcp add tuxguitar -- ~/.cargo/bin/tabmcp serve
+```
+(lands in `~/.codex/config.toml`; check with `codex mcp list`)
+
+**Google Antigravity** (Gemini): in the IDE open **Manage MCP Servers →
+Open MCP Config** (the agent panel's `...` menu) and add:
+```json
+{
+  "mcpServers": {
+    "tuxguitar": { "command": "/Users/<you>/.cargo/bin/tabmcp", "args": ["serve"] }
+  }
+}
+```
+then hit **Refresh** — "tuxguitar, 41 tools enabled" should appear. The
+`agy` CLI reads the same shape from `~/.gemini/config/mcp_config.json`.
+
+**xAI Grok CLI**: add the same `mcpServers` JSON block to Grok's MCP
+config (`grok mcp add` or the `mcpServers` section of its settings file,
+depending on your build — check `grok --help`). Any client that speaks
+MCP stdio works with the identical `command`/`args` pair.
+
+One client at a time: the bridge serves a single connection, so close or
+idle other AI sessions when switching composers.
+
+Start TuxGuitar, then in a fresh session of your client try:
 
 > *"Write an 8-bar metal riff in E minor with a pinch harmonic, generate
 > bass and drums from it, then refine it with the AI Ear loop until the

@@ -21,11 +21,10 @@ seven named devices", which is how human players learn too.
 
 ## 2. Vocabulary gaps (server work, ordered by payoff)
 
-1. **Riff-device transforms as tools** — `vary_riff { transform }`:
-   rhythmic displacement (shift pattern by an 8th/16th), octave
-   displacement, inversion, retrograde, diminution/augmentation (halve or
-   double note values), pedal-tone interleave. Mechanical on the wire
-   model; instantly multiplies material from any 1-bar seed.
+1. ~~**Riff-device transforms as tools**~~ ✅ DONE: `vary_riff` now has 9
+   transforms — displace, retrograde, invert, octave, augment, diminish,
+   pedal-tone fill (palm-muted), polymetric regroup (3+3+2 accents across
+   barlines), dynamics swap (mutes <-> accents).
 2. **Remaining effect parameters on write**: grace note (fret,
    duration, transition), trill (fret, speed), tremolo-picking speed,
    tremolo-bar curves (same point-list shape as bends). Read side flags
@@ -39,7 +38,14 @@ seven named devices", which is how human players learn too.
    written as tuplet pairs (triplet swing) — a `feel` option on humanize
    / drum templates (velocity-based push-pull is already possible).
 
-## 3. The style system — `tuxguitar_style_guide` (recommended next build)
+## 3. The style system — `tuxguitar_style_guide` (✅ SHIPPED, then extended)
+
+Now 16 styles (deathcore added) on a consistent rubric: scales, tuning
+presets, tempo + numeric range, meters, rhythmic cells, techniques, drums,
+signature devices, song-section arc, mood, difficulty, an AVOID list, and
+numeric evaluation targets (tempo + syncopation window) that
+`tuxguitar_evaluate { style }` checks automatically. Original design table
+below for reference:
 
 One read-only tool: `style_guide { style }` returns a composition recipe
 the AI folds into its writing. Data table, ~15 lines per style. Proposed
@@ -68,25 +74,26 @@ Every column maps to EXISTING tools: scales → the 44-scale catalog, drums
 patterns. The guide is glue, not new machinery. A `list` variant returns
 the catalog names.
 
-## 4. Judgment upgrades (evaluators that reward complexity)
+## 4. Judgment upgrades (evaluators that reward complexity) — ✅ ALL DONE
 
-- **Syncopation score**: fraction of onsets off the strong beats — flag
-  BOTH extremes ("metronomic" vs "unmoored"), styled thresholds.
-- **Motif development**: today repetition is one number; split into
-  *literal repeats* vs *varied repeats* (same rhythm, different pitches or
-  vice versa) — reward variation, not copy-paste.
-- **Tension curve**: per-measure dissonance + register + density composite
-  plotted across sections; "your breakdown releases tension before the
-  climax" style notes.
-- **Harmonic rhythm**: chord-change rate per section.
-- **Pass history**: evaluate stores per-pass scores in the session so the
-  loop reports trends ("groove 53% → 84%").
+- ~~**Syncopation score**~~ ✅ weighted off-beat share, style-windowed via
+  `evaluate { style }` (each of the 16 rubrics carries a target range).
+- ~~**Motif development**~~ ✅ literal / varied / fresh measure counts;
+  copy-paste flagged as an ISSUE, variation rewarded.
+- ~~**Tension curve**~~ ✅ per-measure composite (density + dynamics +
+  register + dissonance) with a sparkline, flat-curve ISSUE, and optional
+  `tension_target` arc comparison.
+- ~~**Harmonic rhythm**~~ ✅ root-change rate per measure boundary.
+- ~~**Pass history**~~ ✅ PASS TREND line ("groove 53% -> 84%, issues 5 -> 0").
+- **NEW — human-feel check** ✅: composite AI-artifact detection (identical
+  velocities, copy-paste-only repeats, flat energy, no motif).
 
 ## 5. Everything else, prioritized
 
 **Near (mechanical):** revision-bump coalescing (Java events); tremolo-bar
-& grace params; vary_riff transforms; style_guide tool; per-section
-evaluate for ALL metrics (currently groove only).
+& grace params; per-section evaluate for ALL metrics (currently groove
+only); `evolve_riff` generation driver (#6) and `analyze_difficulty` (#8)
+from the idea backlog below. ~~vary_riff transforms; style_guide tool~~ ✅ done.
 
 **Middle (design):** chord-progression planner (name a progression, get
 voicings per style + voice-leading check); solo scaffolding (contour plan +
@@ -98,3 +105,23 @@ lick cells + the fingering optimizer); A/B render compare
 headless .tg engine; MCP resources/elicitation; TuxGuitar 2.1 migration.
 
 **Explicitly parked by user:** loop-practice transport, distribution.
+
+## 6. The idea backlog (2026-07-20 session, user's 12)
+
+Status after the "beast batch" (vary_riff x9, evaluator upgrades, style
+rubrics, riff_dna):
+
+| # | Idea | Status |
+|---|---|---|
+| 1 | **Riff DNA** — extract motif/rhythm/scale/techniques/energy identity | ✅ `tuxguitar_riff_dna` shipped |
+| 2 | **Section awareness** — what each song section should do | ✅ `sections` field in every style rubric; per-section groove already in evaluate |
+| 3 | **Instrument roles** — lead/rhythm/bass/kick/snare purposes | Partial: generators encode roles (bass mirrors accents, drums templates); a `roles` guide field is a cheap next step |
+| 4 | **Tension curve targets** | ✅ measured curve + `tension_target` compare in evaluate |
+| 5 | **Humanization score** | ✅ robotic-velocity, literal-repeat, flat-tension flags feed the human-feel check |
+| 6 | **Riff evolution** — generations with mutations | Next: the loop exists manually (riff_dna -> vary_riff -> evaluate); a `evolve_riff` driver tool would automate N generations |
+| 7 | **Technique budget** — percentage mix per style | riff_dna reports the measured mix; enforcing a target mix = evaluator addition |
+| 8 | **Difficulty analyzer** — 1-10 with reasons | Next: fingering CostModel already computes effort; expose as `analyze_difficulty` |
+| 9 | **Explain every decision** | Partial: fingering explains itself; edit tools return summaries; a "reason" convention for generators would complete it |
+| 10 | **"Could a human have written this?"** | ✅ HUMAN-FEEL CHECK in evaluate (AI-artifact detection) |
+| 11 | **Riff genealogy** — family tree of variants | Design: needs named checkpoints/branches; pairs with #6 |
+| 12 | **Band simulation** — role agents + producer + AI Ear | Long-term: the MCP surface already supports it (any client can run multi-agent); a `band` MCP prompt could orchestrate |
