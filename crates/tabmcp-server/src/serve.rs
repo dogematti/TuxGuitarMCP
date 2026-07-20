@@ -4,10 +4,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{ErrorData, ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
+use rmcp::model::{ErrorData, PromptMessage, Role, ServerCapabilities, ServerInfo};
+use rmcp::{
+    prompt, prompt_handler, prompt_router, tool, tool_handler, tool_router, ServerHandler,
+    ServiceExt,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tabmcp_bridge::{BridgeClient, BridgeError};
@@ -47,6 +51,67 @@ pub struct TabMcp {
     bridge: Arc<Mutex<Option<BridgeClient>>>,
     discovery_path: PathBuf,
     tool_router: ToolRouter<Self>,
+    prompt_router: PromptRouter<Self>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct ComposePromptArgs {
+    /// Style, e.g. "groove metal", "blues shuffle".
+    style: String,
+    /// Key/scale, e.g. "A phrygian dominant", "E minor".
+    key: String,
+    /// Number of bars (as text, e.g. "8").
+    #[serde(default)]
+    bars: Option<String>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct RefinePromptArgs {
+    /// How many refinement passes to run (as text, default "3").
+    #[serde(default)]
+    passes: Option<String>,
+}
+
+#[prompt_router]
+impl TabMcp {
+    /// Compose a full arrangement from scratch and refine it.
+    #[prompt(
+        name = "compose",
+        description = "Compose a riff + bass + drums in a style and key, then refine with the AI Ear loop."
+    )]
+    async fn compose_prompt(&self, params: Parameters<ComposePromptArgs>) -> Vec<PromptMessage> {
+        let bars = params.0.bars.unwrap_or_else(|| "8".into());
+        vec![PromptMessage::new_text(
+            Role::User,
+            format!(
+                "Using the tuxguitar tools: compose a {bars}-bar {} riff in {} on the current \
+                 track (create/retune tracks as needed), generate bass and drums from it \
+                 (pick a fitting drum style), loop it, then run the AI-Ear refinement loop \
+                 (tuxguitar_evaluate -> fix top issue -> re-evaluate) until the scorecard is \
+                 clean, humanize, and finish with tuxguitar_render_and_listen plus a summary \
+                 of every pass and the Cmd+Z rollback map.",
+                params.0.style, params.0.key,
+            ),
+        )]
+    }
+
+    /// Run the AI-Ear refinement loop on the current score.
+    #[prompt(
+        name = "refine",
+        description = "Run N passes of the AI Ear loop (evaluate -> fix -> re-listen) on the open score."
+    )]
+    async fn refine_prompt(&self, params: Parameters<RefinePromptArgs>) -> Vec<PromptMessage> {
+        let passes = params.0.passes.unwrap_or_else(|| "3".into());
+        vec![PromptMessage::new_text(
+            Role::User,
+            format!(
+                "Run {passes} refinement pass(es) on the score currently open in TuxGuitar: \
+                 each pass call tuxguitar_evaluate and tuxguitar_listen_stems, fix the top \
+                 issue with the edit tools (preview -> confirm), and explain what changed and \
+                 why. Finish with tuxguitar_render_and_listen and the Cmd+Z rollback map.",
+            ),
+        )]
+    }
 }
 
 // ---------- tool parameter and result types ----------
@@ -532,6 +597,7 @@ impl TabMcp {
             bridge: Arc::new(Mutex::new(None)),
             discovery_path,
             tool_router: Self::tool_router(),
+            prompt_router: Self::prompt_router(),
         }
     }
 
@@ -2189,9 +2255,63 @@ impl TabMcp {
         .map_err(|e| ErrorData::internal_error(format!("analysis task failed: {e}"), None))?
         .map_err(|e| ErrorData::internal_error(e, None))?;
 
+        // Measure-aligned levels when the timeline is linear (no repeats).
+        let mut measure_notes = String::new();
+        let song = self.fetch_song().await.ok();
+        if let Some(song) = song {
+            let has_repeats = song
+                .headers
+                .iter()
+                .any(|h| h.repeat_open || h.repeat_close > 0);
+            if !has_repeats && song.headers.len() > 1 {
+                let mut boundaries = vec![0.0f64];
+                let mut t = 0.0f64;
+                for (i, header) in song.headers.iter().enumerate() {
+                    let len_ticks = song
+                        .headers
+                        .get(i + 1)
+                        .map(|n| n.start_tick.saturating_sub(header.start_tick))
+                        .unwrap_or_else(|| {
+                            header.time_signature.numerator as u64 * 960 * 4
+                                / header.time_signature.denominator.max(1) as u64
+                        });
+                    t += len_ticks as f64 / 960.0 * 60.0 / header.tempo_bpm.max(1) as f64;
+                    boundaries.push(t);
+                }
+                if let Ok(levels) = tokio::task::spawn_blocking({
+                    let wav_path = wav_path.clone();
+                    move || crate::audio::measure_levels(&wav_path, &boundaries)
+                })
+                .await
+                .unwrap_or_else(|_| Err("task".into()))
+                {
+                    if let (Some(max_i), Some(min_i)) = (
+                        levels
+                            .iter()
+                            .enumerate()
+                            .max_by(|a, b| a.1.total_cmp(b.1))
+                            .map(|(i, _)| i),
+                        levels
+                            .iter()
+                            .enumerate()
+                            .min_by(|a, b| a.1.total_cmp(b.1))
+                            .map(|(i, _)| i),
+                    ) {
+                        measure_notes = format!(
+                            "Measure levels: loudest m{} ({:.1} dBFS), quietest m{} ({:.1} dBFS)\n",
+                            max_i + 1,
+                            levels[max_i],
+                            min_i + 1,
+                            levels[min_i]
+                        );
+                    }
+                }
+            }
+        }
         Ok(format!(
-            "{}\nRendered with TuxGuitar's soundfont ({}).\nAudio kept at {} — the user can play it.",
+            "{}{}Rendered with TuxGuitar's soundfont ({}).\nAudio kept at {} — the user can play it.",
             crate::audio::describe(&report),
+            measure_notes,
             soundfont.file_name().and_then(|n| n.to_str()).unwrap_or("sf2"),
             wav_path.display(),
         ))
@@ -2779,10 +2899,14 @@ fn duration_ticks(duration: &tabmcp_model::Duration) -> u64 {
 }
 
 #[tool_handler(router = self.tool_router)]
+#[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for TabMcp {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_prompts()
+            .build();
         info.instructions = Some(
             "TabMCP connects you to the score currently open in the TuxGuitar tablature \
                  editor. Typical flow: tuxguitar_get_score_summary for orientation, \

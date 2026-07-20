@@ -133,6 +133,24 @@ pub fn analyze_wav(path: &Path) -> Result<AudioReport, String> {
     })
 }
 
+/// Per-measure RMS levels (dBFS) given measure boundaries in seconds.
+pub fn measure_levels(path: &Path, boundaries: &[f64]) -> Result<Vec<f64>, String> {
+    let (samples, sample_rate) = decode_mono(path)?;
+    let mut levels = Vec::new();
+    for window in boundaries.windows(2) {
+        let start = (window[0] * sample_rate as f64) as usize;
+        let end = ((window[1] * sample_rate as f64) as usize).min(samples.len());
+        if start >= end {
+            levels.push(-120.0);
+            continue;
+        }
+        let chunk = &samples[start..end];
+        let rms = (chunk.iter().map(|s| s * s).sum::<f64>() / chunk.len() as f64).sqrt();
+        levels.push(dbfs(rms));
+    }
+    Ok(levels)
+}
+
 /// Producer's notes for the rendered mix.
 pub fn describe(report: &AudioReport) -> String {
     let (low, mid, high) = report.band_share;
