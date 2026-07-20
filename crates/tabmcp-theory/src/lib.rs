@@ -3,6 +3,7 @@
 
 pub mod analysis;
 pub mod fingering;
+pub mod generation;
 pub mod pitch;
 
 pub use analysis::{

@@ -235,6 +235,31 @@ struct OptimizeFingeringParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct GenerateParams {
+    /// Source track to derive from (1-based). Omit to use the selection's
+    /// track, falling back to track 1.
+    #[serde(default)]
+    source_track: Option<u32>,
+    /// First measure of the source passage. Omit to use the selection,
+    /// falling back to the whole track.
+    #[serde(default)]
+    from_measure: Option<u32>,
+    /// Last measure (inclusive).
+    #[serde(default)]
+    to_measure: Option<u32>,
+    /// Harmony only: "third" (default) or "sixth".
+    #[serde(default)]
+    interval: Option<String>,
+    /// False (default): preview what would be generated. True: create the
+    /// new track and write the line — requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    /// The revision returned by the preview call.
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct CreateTrackParams {
     /// Track name shown in TuxGuitar (e.g. "7-String Rhythm").
     name: String,
@@ -1007,6 +1032,36 @@ impl TabMcp {
     }
 
     #[tool(
+        description = "Generate a root-following bassline from a guitar passage: detects the harmony per measure, mirrors the source rhythm, adds chromatic approach notes into root changes, and writes it to a NEW 4-string bass track (fingered by the optimizer). Defaults to the selection. TWO-STEP: preview describes the line; confirm=true with expected_revision creates the track and writes it (undoable).",
+        annotations(
+            title = "Generate bassline",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_generate_bassline(
+        &self,
+        params: Parameters<GenerateParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        self.generate(params.0, GenerateKind::Bassline).await
+    }
+
+    #[tool(
+        description = "Generate a diatonic harmony line (3rds or 6ths above the lead, staying in the detected scale) from a monophonic passage, written to a NEW track with the same tuning as the source (fingered by the optimizer). Defaults to the selection. TWO-STEP: preview first, then confirm=true with expected_revision (undoable).",
+        annotations(
+            title = "Generate harmony",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_generate_harmony(
+        &self,
+        params: Parameters<GenerateParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        self.generate(params.0, GenerateKind::Harmony).await
+    }
+
+    #[tool(
         description = "Create a new track in the open score with a name and tuning (explicit note names or a preset like '7-string A standard'). The new track is appended after the existing ones and is undoable.",
         annotations(
             title = "Create track",
@@ -1182,7 +1237,192 @@ fn actionable(error: &BridgeError) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
+enum GenerateKind {
+    Bassline,
+    Harmony,
+}
+
 impl TabMcp {
+    /// Shared driver for the generation tools: resolve scope, read source,
+    /// generate, then (on confirm) create the target track and write.
+    async fn generate(
+        &self,
+        p: GenerateParams,
+        kind: GenerateKind,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        let (song, selection) = self
+            .call_bridge(|client| {
+                let song = client.read_song()?;
+                let selection = client.read_selection()?;
+                Ok((song, selection))
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+
+        let source_track = p
+            .source_track
+            .or(if selection.active {
+                selection.track_number
+            } else {
+                None
+            })
+            .unwrap_or(1);
+        let song_len = song.headers.len() as u32;
+        let (from, to) = match (p.from_measure, p.to_measure) {
+            (Some(from), Some(to)) => (from, to),
+            (Some(from), None) => (from, from),
+            (None, _) if selection.active => (
+                selection.from_measure.unwrap_or(1),
+                selection.to_measure.unwrap_or(song_len),
+            ),
+            _ => (1, song_len.max(1)),
+        };
+        if from == 0 || to < from || to > song_len {
+            return Err(ErrorData::invalid_params(
+                format!("invalid measure range {from}-{to}: the score has measures 1-{song_len}"),
+                None,
+            ));
+        }
+        let track = song
+            .tracks
+            .iter()
+            .find(|t| t.number == source_track)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("track {source_track} does not exist"), None)
+            })?;
+        let source_tuning: Vec<(u32, u8)> = track
+            .strings
+            .iter()
+            .map(|s| (s.number, s.open_pitch))
+            .collect();
+        let max_fret = if track.max_fret > 0 {
+            track.max_fret
+        } else {
+            24
+        };
+
+        let range = self
+            .call_bridge(move |client| client.read_measures(source_track, from, to))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+
+        // Generate.
+        let bass_tuning: Vec<(u32, u8)> = tabmcp_theory::tuning_preset("4-string bass")
+            .expect("preset exists")
+            .iter()
+            .enumerate()
+            .map(|(i, &pitch)| (i as u32 + 1, pitch))
+            .collect();
+        let interval = p.interval.clone().unwrap_or_else(|| "third".into());
+        let (new_track_name, target_strings, generated, description) = match kind {
+            GenerateKind::Bassline => {
+                let (measures, description) = tabmcp_theory::generation::generate_bassline(
+                    &range.measures,
+                    &source_tuning,
+                    &bass_tuning,
+                    24,
+                )
+                .map_err(|e| ErrorData::invalid_params(e, None))?;
+                let strings: Vec<tabmcp_model::StringTuning> = bass_tuning
+                    .iter()
+                    .map(|&(number, open_pitch)| tabmcp_model::StringTuning { number, open_pitch })
+                    .collect();
+                ("Bass (AI)".to_string(), strings, measures, description)
+            }
+            GenerateKind::Harmony => {
+                let (measures, description) = tabmcp_theory::generation::generate_harmony(
+                    &range.measures,
+                    &source_tuning,
+                    max_fret,
+                    &interval,
+                )
+                .map_err(|e| ErrorData::invalid_params(e, None))?;
+                let strings: Vec<tabmcp_model::StringTuning> = track.strings.clone();
+                (
+                    "Harmony Guitar (AI)".to_string(),
+                    strings,
+                    measures,
+                    description,
+                )
+            }
+        };
+        let note_count = count_notes(&generated);
+
+        if !p.confirm {
+            return Ok(Json(EditOutcome {
+                applied: false,
+                summary: format!(
+                    "PREVIEW ONLY — nothing changed. Would create a new track \"{new_track_name}\" \
+                     and write {note_count} notes into measures {from}-{to}: {description}. \
+                     Source: track {source_track} (\"{}\"). To apply, call again with \
+                     confirm=true and expected_revision={}. (Undoing afterwards takes two \
+                     Cmd+Z steps: one for the notes, one for the track.)",
+                    track.name, song.revision,
+                ),
+                revision: song.revision,
+                measures_added: None,
+                notes_before: Some(0),
+                notes_after: Some(note_count),
+            }));
+        }
+        let expected_revision = p.expected_revision.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "confirm=true requires expected_revision (from the preview call)",
+                None,
+            )
+        })?;
+        // Stale check before creating the track (creation itself bumps the
+        // revision, so the write below uses the post-creation revision).
+        let ping = self
+            .call_bridge(|client| client.ping())
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        if ping.revision != expected_revision {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "score changed: expected revision {expected_revision}, current is {} — \
+                     re-run the preview",
+                    ping.revision
+                ),
+                None,
+            ));
+        }
+
+        let name_for_create = new_track_name.clone();
+        let created = self
+            .call_bridge(move |client| client.create_track(&name_for_create, &target_strings))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        let new_track = created
+            .get("trackNumber")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32;
+        let post_create_revision = created
+            .get("newRevision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+
+        let result = self
+            .call_bridge(move |client| {
+                client.apply_replace_measures(new_track, from, &generated, post_create_revision)
+            })
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(Json(EditOutcome {
+            applied: true,
+            summary: format!(
+                "Applied: created track {new_track} \"{new_track_name}\" and wrote {} notes \
+                 into measures {from}-{to} — {description}. Undo takes two Cmd+Z steps.",
+                result.notes_after,
+            ),
+            revision: result.new_revision,
+            measures_added: Some(0),
+            notes_before: Some(0),
+            notes_after: Some(result.notes_after),
+        }))
+    }
+
     /// Run a bridge operation on a blocking thread, connecting (or
     /// reconnecting once) as needed.
     async fn call_bridge<T, F>(&self, operation: F) -> Result<T, BridgeCallError>

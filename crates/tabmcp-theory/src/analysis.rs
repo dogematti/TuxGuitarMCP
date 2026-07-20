@@ -148,6 +148,14 @@ pub fn tonal_center(events: &[NoteEvent]) -> Option<String> {
     detect_scales(events).first().map(|c| c.root.clone())
 }
 
+/// Pitch classes of a named scale at a root (names as in `detect_scales`).
+pub fn scale_pitch_classes(root_pc: u8, scale: &str) -> Option<Vec<u8>> {
+    SCALES
+        .iter()
+        .find(|(name, _)| *name == scale)
+        .map(|(_, offsets)| offsets.iter().map(|o| (root_pc + o) % 12).collect())
+}
+
 const INTERVAL_NAMES: [&str; 13] = [
     "unison",
     "minor 2nd",
