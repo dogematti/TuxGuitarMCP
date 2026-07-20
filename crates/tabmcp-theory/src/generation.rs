@@ -22,6 +22,23 @@ struct Onset {
 
 /// Flatten measures into onsets (lowest note per beat when chords occur,
 /// skipping ties and rests). Requires the source tuning to derive pitches.
+/// Per-measure lengths in ticks, derived from consecutive start ticks
+/// (last measure assumes the previous length; lone measures assume 4/4).
+fn measure_lengths(measures: &[Measure]) -> Vec<u64> {
+    let mut lengths = Vec::with_capacity(measures.len());
+    for i in 0..measures.len() {
+        let length = if i + 1 < measures.len() {
+            measures[i + 1]
+                .start_tick
+                .saturating_sub(measures[i].start_tick)
+        } else {
+            lengths.last().copied().unwrap_or(0)
+        };
+        lengths.push(if length > 0 { length } else { 3840 });
+    }
+    lengths
+}
+
 fn onsets(measures: &[Measure], tuning: Tuning) -> Vec<Onset> {
     let open: std::collections::HashMap<u32, u8> = tuning.iter().copied().collect();
     let mut result = Vec::new();
@@ -181,6 +198,7 @@ pub fn generate_bassline(
         return Err("the source passage contains no notes to follow".into());
     }
     let roots = measure_roots(source, &all_onsets);
+    let measure_len = measure_lengths(source);
 
     // Lowest pitch we allow the bass to sit on. The tuning may reach E1
     // (MIDI 28), but common GM soundfonts (including TuxGuitar's own
@@ -211,7 +229,11 @@ pub fn generate_bassline(
             .get(onset.measure_index.wrapping_sub(1))
             .map(|&prev| prev == root && onset.measure_index > 0)
             .unwrap_or(false);
-        if root_unchanged && (1920..2880).contains(&onset.offset) {
+        let len = measure_len
+            .get(onset.measure_index)
+            .copied()
+            .unwrap_or(3840);
+        if root_unchanged && (len / 2..len * 3 / 4).contains(&onset.offset) {
             pitch = to_bass_pitch((root + 7) % 12);
         }
         // Chromatic approach into a new root on the last onset of a measure.
@@ -460,10 +482,15 @@ pub fn generate_drums(
     let mut extra_kicks = 0usize;
     for (index, template_measure) in source.iter().enumerate() {
         // offset -> hits at that slot
+        let measure_len = measure_lengths(source).get(index).copied().unwrap_or(3840);
         let mut slots: std::collections::BTreeMap<u64, Vec<(u32, u32)>> =
             std::collections::BTreeMap::new();
         for &(offset, key, velocity) in template.hits {
-            slots.entry(offset).or_default().push((key, velocity));
+            // Meter awareness: drop template hits beyond this measure's
+            // actual length (templates are written for 4/4).
+            if offset < measure_len {
+                slots.entry(offset).or_default().push((key, velocity));
+            }
         }
         if template.follow_accents {
             let measure_onsets: Vec<&Onset> = all_onsets
@@ -737,6 +764,36 @@ mod tests {
             .beats
             .iter()
             .any(|b| b.voices[0].notes.iter().any(|n| n.fret == DRUM_HIHAT_OPEN)));
+    }
+
+    #[test]
+    fn drums_respect_odd_meter_lengths() {
+        // Measure 1 = 4/4 (3840 ticks), measure 2 = 7/8 (3360 ticks) —
+        // lengths derived from consecutive startTicks.
+        let mut m1 = source().remove(0);
+        m1.start_tick = 960;
+        let mut m2 = source().remove(0);
+        m2.number = 2;
+        m2.start_tick = 960 + 3840;
+        for (j, beat) in m2.beats.iter_mut().enumerate() {
+            beat.start_tick = m2.start_tick + j as u64 * 480;
+        }
+        let mut m3 = source().remove(0);
+        m3.number = 3;
+        m3.start_tick = 960 + 3840 + 3360; // makes measure 2 read as 7/8
+        for (j, beat) in m3.beats.iter_mut().enumerate() {
+            beat.start_tick = m3.start_tick + j as u64 * 480;
+        }
+        let (measures, _) = generate_drums(&[m1, m2, m3], STANDARD, "rock").expect("generates");
+        for beat in &measures[1].beats {
+            assert!(
+                beat.start_tick < 3360,
+                "7/8 measure must not receive hits at 4/4 offsets: {}",
+                beat.start_tick
+            );
+        }
+        // The 4/4 measure still gets its full backbeat.
+        assert!(measures[0].beats.iter().any(|b| b.start_tick == 2880));
     }
 
     #[test]

@@ -220,6 +220,54 @@ impl BridgeClient {
         self.call("render_midi", &json!({}))
     }
 
+    /// Change time signature from a measure (optionally to the end).
+    pub fn set_time_signature(
+        &mut self,
+        measure: u32,
+        numerator: u32,
+        denominator: u32,
+        to_end: bool,
+    ) -> Result<serde_json::Value, BridgeError> {
+        self.call(
+            "set_time_signature",
+            &json!({ "measure": measure, "numerator": numerator,
+                     "denominator": denominator, "toEnd": to_end }),
+        )
+    }
+
+    /// Change key signature on a track from a measure.
+    pub fn set_key_signature(
+        &mut self,
+        track_number: u32,
+        measure: u32,
+        key: i32,
+        to_end: bool,
+    ) -> Result<serde_json::Value, BridgeError> {
+        self.call(
+            "set_key_signature",
+            &json!({ "trackNumber": track_number, "measure": measure,
+                     "key": key, "toEnd": to_end }),
+        )
+    }
+
+    /// Insert empty measures before `at`.
+    pub fn insert_measures(
+        &mut self,
+        at: u32,
+        count: u32,
+    ) -> Result<serde_json::Value, BridgeError> {
+        self.call("insert_measures", &json!({ "at": at, "count": count }))
+    }
+
+    /// Delete `count` measures starting at `from`.
+    pub fn delete_measures(
+        &mut self,
+        from: u32,
+        count: u32,
+    ) -> Result<serde_json::Value, BridgeError> {
+        self.call("delete_measures", &json!({ "from": from, "count": count }))
+    }
+
     /// Set (or clear with an empty title) a section marker on a measure.
     pub fn set_marker(
         &mut self,

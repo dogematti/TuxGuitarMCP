@@ -172,6 +172,14 @@ public class McpSocketServer {
 				return this.service.createTrack(params);
 			case "change_tuning":
 				return this.service.changeTuning(params);
+			case "set_time_signature":
+				return this.service.setTimeSignature(params);
+			case "set_key_signature":
+				return this.service.setKeySignature(params);
+			case "insert_measures":
+				return this.service.insertMeasures(params);
+			case "delete_measures":
+				return this.service.deleteMeasures(params);
 			case "set_marker":
 				return this.service.setMarker(params);
 			case "set_repeat":

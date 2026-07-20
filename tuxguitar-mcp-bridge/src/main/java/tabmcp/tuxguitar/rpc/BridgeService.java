@@ -36,7 +36,7 @@ import tabmcp.tuxguitar.read.SongReader;
 public class BridgeService {
 
 	public static final int PROTOCOL_VERSION = 1;
-	public static final String PLUGIN_VERSION = "0.6.1";
+	public static final String PLUGIN_VERSION = "0.7.0";
 
 	private static final long EDIT_TIMEOUT_SECONDS = 10;
 
@@ -544,6 +544,127 @@ public class BridgeService {
 		JsonObject result = new JsonObject();
 		result.addProperty("path", path.toString());
 		result.addProperty("bytes", size);
+		return result;
+	}
+
+	private app.tuxguitar.song.models.TGMeasureHeader findHeader(TGSong song, int measure) {
+		java.util.Iterator<app.tuxguitar.song.models.TGMeasureHeader> it = song.getMeasureHeaders();
+		while (it.hasNext()) {
+			app.tuxguitar.song.models.TGMeasureHeader header = it.next();
+			if (header.getNumber() == measure) {
+				return header;
+			}
+		}
+		return null;
+	}
+
+	/** Change the time signature from a measure (optionally to the end). */
+	public JsonObject setTimeSignature(JsonObject params) throws RpcException {
+		int measure = params.has("measure") ? params.get("measure").getAsInt() : 1;
+		int numerator = params.has("numerator") ? params.get("numerator").getAsInt() : 4;
+		int denominator = params.has("denominator") ? params.get("denominator").getAsInt() : 4;
+		boolean toEnd = !params.has("toEnd") || params.get("toEnd").getAsBoolean();
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		app.tuxguitar.song.models.TGMeasureHeader header = findHeader(song, measure);
+		if (header == null || numerator < 1 || numerator > 32) {
+			throw new RpcException(RpcException.INVALID_RANGE, "invalid measure or numerator");
+		}
+		app.tuxguitar.song.models.TGTimeSignature ts =
+			documentManager.getSongManager().getFactory().newTimeSignature();
+		ts.setNumerator(numerator);
+		ts.getDenominator().setValue(denominator);
+		app.tuxguitar.editor.action.TGActionProcessor processor =
+			new app.tuxguitar.editor.action.TGActionProcessor(
+				this.context, "action.composition.change-time-signature");
+		processor.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_SONG, song);
+		processor.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_HEADER, header);
+		processor.setAttribute(
+			app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_TIME_SIGNATURE, ts);
+		processor.setAttribute("applyToEnd", Boolean.valueOf(toEnd));
+		processor.processOnCurrentThread();
+		JsonObject result = new JsonObject();
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
+		return result;
+	}
+
+	/** Change the key signature on a track from a measure. */
+	public JsonObject setKeySignature(JsonObject params) throws RpcException {
+		int measure = params.has("measure") ? params.get("measure").getAsInt() : 1;
+		int trackNumber = params.has("trackNumber") ? params.get("trackNumber").getAsInt() : 1;
+		int key = params.has("key") ? params.get("key").getAsInt() : 0;
+		boolean toEnd = !params.has("toEnd") || params.get("toEnd").getAsBoolean();
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		TGTrack track = new MeasureReader().findTrack(song, trackNumber);
+		if (track == null || measure < 1 || measure > track.countMeasures()) {
+			throw new RpcException(RpcException.INVALID_RANGE, "invalid track or measure");
+		}
+		app.tuxguitar.editor.action.TGActionProcessor processor =
+			new app.tuxguitar.editor.action.TGActionProcessor(
+				this.context, "action.composition.change-key-signature");
+		processor.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_TRACK, track);
+		processor.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_MEASURE,
+			track.getMeasure(measure - 1));
+		processor.setAttribute("keySignature", Integer.valueOf(key));
+		processor.setAttribute("applyToEnd", Boolean.valueOf(toEnd));
+		processor.processOnCurrentThread();
+		JsonObject result = new JsonObject();
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
+		return result;
+	}
+
+	/** Insert empty measures before `at` (undoable via app config). */
+	public JsonObject insertMeasures(JsonObject params) throws RpcException {
+		int at = params.has("at") ? params.get("at").getAsInt() : 1;
+		int count = params.has("count") ? params.get("count").getAsInt() : 1;
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		if (at < 1 || count < 1 || count > 32) {
+			throw new RpcException(RpcException.INVALID_RANGE, "invalid position or count");
+		}
+		for (int i = 0; i < count; i++) {
+			app.tuxguitar.editor.action.TGActionProcessor processor =
+				new app.tuxguitar.editor.action.TGActionProcessor(this.context, "action.measure.add");
+			processor.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_SONG, song);
+			processor.setAttribute("measureNumber", Integer.valueOf(at));
+			processor.processOnCurrentThread();
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
+		return result;
+	}
+
+	/** Delete measures from `from` (undoable via app config). */
+	public JsonObject deleteMeasures(JsonObject params) throws RpcException {
+		int from = params.has("from") ? params.get("from").getAsInt() : 1;
+		int count = params.has("count") ? params.get("count").getAsInt() : 1;
+		TGDocumentManager documentManager = TGDocumentManager.getInstance(this.context);
+		TGSong song = documentManager.getSong();
+		if (song == null) {
+			throw new RpcException(RpcException.NO_DOCUMENT, "no document is open in TuxGuitar");
+		}
+		if (from < 1 || count < 1) {
+			throw new RpcException(RpcException.INVALID_RANGE, "invalid range");
+		}
+		for (int i = 0; i < count; i++) {
+			app.tuxguitar.editor.action.TGActionProcessor processor =
+				new app.tuxguitar.editor.action.TGActionProcessor(this.context, "action.measure.remove");
+			processor.setAttribute(app.tuxguitar.document.TGDocumentContextAttributes.ATTRIBUTE_SONG, song);
+			processor.setAttribute("measureNumber", Integer.valueOf(from));
+			processor.processOnCurrentThread();
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("newRevision", this.revisionTracker.getRevision());
 		return result;
 	}
 

@@ -337,6 +337,42 @@ struct ImportMidiParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct SetTimeSignatureParams {
+    /// Measure where the new time signature starts (1-based).
+    measure: u32,
+    /// Beats per measure (1..32).
+    numerator: u32,
+    /// Beat unit: 4 = quarter, 8 = eighth, ...
+    denominator: u32,
+    /// Apply to the end of the song (default true) or this measure only.
+    #[serde(default)]
+    to_end: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct SetKeySignatureParams {
+    /// Measure where the key starts (1-based).
+    measure: u32,
+    /// TuxGuitar key code: 0 = C/Am; 1..7 = sharps; 8..14 = flats (1b..7b).
+    key: i32,
+    /// Track number (default 1).
+    #[serde(default)]
+    track_number: Option<u32>,
+    /// Apply to the end (default true).
+    #[serde(default)]
+    to_end: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct InsertMeasuresParams {
+    /// Position (1-based): insert before / delete starting at this measure.
+    at: u32,
+    /// How many measures (default 1).
+    #[serde(default)]
+    count: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct SetMarkerParams {
     /// Measure to mark (1-based).
     measure: u32,
@@ -1668,6 +1704,104 @@ impl TabMcp {
             notes_before: Some(0),
             notes_after: Some(result.notes_after),
         }))
+    }
+
+    #[tool(
+        description = "Change the time signature from a measure onward (or just that measure with to_end=false) — e.g. 7/8 for a djent section. Undoable. Note: generators derive their grids from real measure lengths, so odd meters work downstream.",
+        annotations(
+            title = "Set time signature",
+            read_only_hint = false,
+            destructive_hint = true
+        )
+    )]
+    async fn tuxguitar_set_time_signature(
+        &self,
+        params: Parameters<SetTimeSignatureParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let to_end = p.to_end.unwrap_or(true);
+        self.call_bridge(move |client| {
+            client.set_time_signature(p.measure, p.numerator, p.denominator, to_end)
+        })
+        .await
+        .map_err(BridgeCallError::into_error_data)?;
+        Ok(format!(
+            "Time signature set to {}/{} from measure {}{}.",
+            p.numerator,
+            p.denominator,
+            p.measure,
+            if to_end { " to the end" } else { " only" }
+        ))
+    }
+
+    #[tool(
+        description = "Change the key signature on a track from a measure onward (TuxGuitar key code: 0 = C/Am, positive = sharps 1..7, negative-as 8..14 = flats). Undoable.",
+        annotations(
+            title = "Set key signature",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_set_key_signature(
+        &self,
+        params: Parameters<SetKeySignatureParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let to_end = p.to_end.unwrap_or(true);
+        let track = p.track_number.unwrap_or(1);
+        self.call_bridge(move |client| client.set_key_signature(track, p.measure, p.key, to_end))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(format!(
+            "Key signature {} set from measure {} on track {track}.",
+            p.key, p.measure
+        ))
+    }
+
+    #[tool(
+        description = "Insert empty measures before a position (all tracks — measures are song-wide in TuxGuitar). Undoable.",
+        annotations(
+            title = "Insert measures",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_insert_measures(
+        &self,
+        params: Parameters<InsertMeasuresParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let count = p.count.unwrap_or(1);
+        self.call_bridge(move |client| client.insert_measures(p.at, count))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(format!(
+            "Inserted {count} empty measure(s) before measure {}.",
+            p.at
+        ))
+    }
+
+    #[tool(
+        description = "Delete measures from the song (all tracks — measures are song-wide). DESTRUCTIVE but undoable (one Cmd+Z per deleted measure).",
+        annotations(
+            title = "Delete measures",
+            read_only_hint = false,
+            destructive_hint = true
+        )
+    )]
+    async fn tuxguitar_delete_measures(
+        &self,
+        params: Parameters<InsertMeasuresParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let count = p.count.unwrap_or(1);
+        self.call_bridge(move |client| client.delete_measures(p.at, count))
+            .await
+            .map_err(BridgeCallError::into_error_data)?;
+        Ok(format!(
+            "Deleted {count} measure(s) starting at measure {}.",
+            p.at
+        ))
     }
 
     #[tool(
