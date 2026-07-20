@@ -287,6 +287,10 @@ public class BridgeService {
 		// a bass clef so low tunings don't dangle below a treble staff.
 		final String clef = (params.has("clef") && !params.get("clef").isJsonNull())
 			? params.get("clef").getAsString() : null;
+		final boolean percussion = params.has("percussion")
+			&& !params.get("percussion").isJsonNull()
+			&& params.get("percussion").getAsBoolean();
+		final TGSong finalSong = song;
 		final TGTrack createdTrack = track;
 		TGEditorManager editor = TGEditorManager.getInstance(this.context);
 		editor.runLocked(new Runnable() {
@@ -298,6 +302,18 @@ public class BridgeService {
 					for (int i = 0; i < createdTrack.countMeasures(); i++) {
 						createdTrack.getMeasure(i).setClef(
 							app.tuxguitar.song.models.TGMeasure.CLEF_BASS);
+					}
+				}
+				if (percussion) {
+					// Bank 128 marks the channel as percussion (TGChannel
+					// .isPercussionChannel), which routes playback to the
+					// MIDI drum channel; note values become drum keys.
+					app.tuxguitar.song.models.TGChannel channel =
+						TGDocumentManager.getInstance(BridgeService.this.context)
+							.getSongManager().getChannel(finalSong, createdTrack.getChannelId());
+					if (channel != null) {
+						channel.setBank(app.tuxguitar.song.models.TGChannel.DEFAULT_PERCUSSION_BANK);
+						channel.setProgram(app.tuxguitar.song.models.TGChannel.DEFAULT_PERCUSSION_PROGRAM);
 					}
 				}
 			}

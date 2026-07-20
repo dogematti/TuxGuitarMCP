@@ -276,6 +276,10 @@ struct CreateTrackParams {
     /// Notation clef: "treble" (default) or "bass".
     #[serde(default)]
     clef: Option<String>,
+    /// True to make this a percussion (drum) track — note frets become
+    /// General-MIDI drum keys (36 kick, 38 snare, 42 closed hi-hat, ...).
+    #[serde(default)]
+    percussion: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1065,6 +1069,21 @@ impl TabMcp {
     }
 
     #[tool(
+        description = "Generate a basic rock/metal drum part locked to the source passage's accents: closed hi-hat eighths, snare backbeats, kick doubling the guitar's low-register hits (plus the downbeat). Written to a NEW percussion track. Defaults to the selection. TWO-STEP: preview first, then confirm=true with expected_revision (undoable).",
+        annotations(
+            title = "Generate drums",
+            read_only_hint = false,
+            destructive_hint = false
+        )
+    )]
+    async fn tuxguitar_generate_drums(
+        &self,
+        params: Parameters<GenerateParams>,
+    ) -> Result<Json<EditOutcome>, ErrorData> {
+        self.generate(params.0, GenerateKind::Drums).await
+    }
+
+    #[tool(
         description = "Create a new track in the open score with a name and tuning (explicit note names or a preset like '7-string A standard'). The new track is appended after the existing ones and is undoable.",
         annotations(
             title = "Create track",
@@ -1081,8 +1100,11 @@ impl TabMcp {
         let names = tuning_names(&strings);
         let name = p.name.clone();
         let clef = p.clef.clone();
+        let percussion = p.percussion;
         let result = self
-            .call_bridge(move |client| client.create_track(&name, &strings, clef.as_deref()))
+            .call_bridge(move |client| {
+                client.create_track(&name, &strings, clef.as_deref(), percussion)
+            })
             .await
             .map_err(BridgeCallError::into_error_data)?;
         let track_number = result
@@ -1245,6 +1267,7 @@ fn actionable(error: &BridgeError) -> String {
 enum GenerateKind {
     Bassline,
     Harmony,
+    Drums,
 }
 
 impl TabMcp {
@@ -1357,7 +1380,27 @@ impl TabMcp {
                     None::<&str>,
                 )
             }
+            GenerateKind::Drums => {
+                let (measures, description) =
+                    tabmcp_theory::generation::generate_drums(&range.measures, &source_tuning)
+                        .map_err(|e| ErrorData::invalid_params(e, None))?;
+                // Percussion strings are tuned to 0 so fret == drum key.
+                let strings: Vec<tabmcp_model::StringTuning> = (1..=6)
+                    .map(|number| tabmcp_model::StringTuning {
+                        number,
+                        open_pitch: 0,
+                    })
+                    .collect();
+                (
+                    "Drums (AI)".to_string(),
+                    strings,
+                    measures,
+                    description,
+                    None::<&str>,
+                )
+            }
         };
+        let percussion = matches!(kind, GenerateKind::Drums);
         let note_count = count_notes(&generated);
 
         if !p.confirm {
@@ -1402,7 +1445,9 @@ impl TabMcp {
 
         let name_for_create = new_track_name.clone();
         let created = self
-            .call_bridge(move |client| client.create_track(&name_for_create, &target_strings, clef))
+            .call_bridge(move |client| {
+                client.create_track(&name_for_create, &target_strings, clef, percussion)
+            })
             .await
             .map_err(BridgeCallError::into_error_data)?;
         let new_track = created

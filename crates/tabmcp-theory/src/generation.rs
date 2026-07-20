@@ -277,6 +277,124 @@ pub fn generate_harmony(
     Ok((build_measures(source, &notes, &fingering.path), description))
 }
 
+/// General-MIDI drum keys used by the drum generator.
+pub const DRUM_KICK: u32 = 36;
+pub const DRUM_SNARE: u32 = 38;
+pub const DRUM_HIHAT_CLOSED: u32 = 42;
+
+/// Generate a basic rock/metal drum part locked to the source's accents:
+/// closed hi-hat eighths, snare backbeats (beats 2 and 4), kick doubling
+/// the source's low-register onsets. Written for a percussion track whose
+/// strings are all tuned to 0, so fret == drum key.
+/// Assumes 4/4-ish measures (the eighth grid spans 8 slots); odd meters
+/// get hi-hats only on actual source onsets.
+pub fn generate_drums(
+    source: &[Measure],
+    source_tuning: Tuning,
+) -> Result<(Vec<Measure>, String), String> {
+    let all_onsets = onsets(source, source_tuning);
+    if all_onsets.is_empty() {
+        return Err("the source passage contains no notes to follow".into());
+    }
+    let eighth = Duration {
+        value: 8,
+        dotted: false,
+        double_dotted: false,
+        tuplet: Tuplet {
+            enters: 1,
+            times: 1,
+        },
+    };
+
+    let mut measures = Vec::with_capacity(source.len());
+    let mut kicks = 0usize;
+    for (index, template) in source.iter().enumerate() {
+        let measure_onsets: Vec<&Onset> = all_onsets
+            .iter()
+            .filter(|o| o.measure_index == index)
+            .collect();
+        let low_threshold = measure_onsets
+            .iter()
+            .map(|o| o.pitch)
+            .min()
+            .unwrap_or(0)
+            .saturating_add(2);
+
+        // offset -> drum keys at that slot
+        let mut slots: std::collections::BTreeMap<u64, Vec<u32>> =
+            std::collections::BTreeMap::new();
+        for slot in 0..8u64 {
+            slots.insert(slot * 480, vec![DRUM_HIHAT_CLOSED]);
+        }
+        for onset in &measure_onsets {
+            slots
+                .entry(onset.offset)
+                .or_insert_with(|| vec![DRUM_HIHAT_CLOSED]);
+        }
+        for &backbeat in &[960u64, 2880] {
+            slots.entry(backbeat).or_default().push(DRUM_SNARE);
+        }
+        for onset in &measure_onsets {
+            if onset.pitch <= low_threshold {
+                let keys = slots.entry(onset.offset).or_default();
+                if !keys.contains(&DRUM_KICK) {
+                    keys.push(DRUM_KICK);
+                    kicks += 1;
+                }
+            }
+        }
+        // A drummer anchors the downbeat regardless of what the guitar does.
+        let downbeat = slots.entry(0).or_default();
+        if !downbeat.contains(&DRUM_KICK) {
+            downbeat.push(DRUM_KICK);
+            kicks += 1;
+        }
+
+        let beats = slots
+            .into_iter()
+            .map(|(offset, keys)| Beat {
+                start_tick: offset,
+                voices: vec![Voice {
+                    index: 0,
+                    duration: eighth.clone(),
+                    is_rest: false,
+                    notes: keys
+                        .into_iter()
+                        .map(|key| Note {
+                            // Distinct strings per instrument; fret = drum key
+                            // (percussion strings are tuned to 0).
+                            string: match key {
+                                DRUM_KICK => 6,
+                                DRUM_SNARE => 4,
+                                _ => 1,
+                            },
+                            fret: key,
+                            velocity: match key {
+                                DRUM_KICK => 100,
+                                DRUM_SNARE => 95,
+                                _ => 75,
+                            },
+                            tied: false,
+                            effects: NoteEffects::default(),
+                        })
+                        .collect(),
+                }],
+            })
+            .collect();
+        measures.push(Measure {
+            number: template.number,
+            start_tick: 0,
+            key_signature: template.key_signature,
+            beats,
+        });
+    }
+    let description = format!(
+        "closed hi-hat eighths, snare on beats 2 and 4, {kicks} kick(s) doubling the \
+         source's low-register accents"
+    );
+    Ok((measures, description))
+}
+
 // Rests are intentionally omitted from generated measures: the bridge's
 // autoCompleteSilences fills every gap, so onsets are all we need.
 #[allow(dead_code)]
@@ -377,6 +495,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn drums_lock_to_accents_and_backbeats() {
+        let (measures, description) = generate_drums(&source(), STANDARD).expect("generates");
+        assert_eq!(measures.len(), 2);
+        for measure in &measures {
+            let mut has_snare_backbeat = false;
+            let mut has_kick_on_one = false;
+            for beat in &measure.beats {
+                for note in &beat.voices[0].notes {
+                    if note.fret == DRUM_SNARE
+                        && (beat.start_tick == 960 || beat.start_tick == 2880)
+                    {
+                        has_snare_backbeat = true;
+                    }
+                    if note.fret == DRUM_KICK && beat.start_tick == 0 {
+                        has_kick_on_one = true;
+                    }
+                }
+            }
+            assert!(has_snare_backbeat, "snare must hit the backbeat");
+            assert!(
+                has_kick_on_one,
+                "kick must land on beat 1 (lowest source note)"
+            );
+        }
+        assert!(description.contains("hi-hat"), "{description}");
     }
 
     #[test]
