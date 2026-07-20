@@ -1,116 +1,106 @@
-# TabMCP — AI-native tablature assistant for TuxGuitar
+# TabMCP — an AI musician inside TuxGuitar
 
-An MCP integration that lets AI clients read, analyze, and safely edit the
-score currently open in [TuxGuitar](https://tuxguitar.app):
+TabMCP connects MCP-compatible AI clients (Claude Code, Claude Desktop, ...)
+to the score currently open in [TuxGuitar](https://tuxguitar.app). The AI can
+**compose, arrange, listen to its own output, critique it, and revise** —
+like a musician in the studio, not a one-shot generator.
 
-- **Rust service** (`crates/`): MCP server, normalized score model, music
-  theory, change-set generation.
-- **Java plugin** (`tuxguitar-mcp-bridge/`): thin bridge inside TuxGuitar
-  exposing the live score over a localhost socket, applying edits through
-  TuxGuitar's own undo system.
+- **Rust service** (`crates/`): the MCP server, normalized score model,
+  music-theory engine (scales, chords, fingering, generation, critique),
+  and the audio "ear" (render + DSP analysis).
+- **Java plugin** (`tuxguitar-mcp-bridge/`): a thin bridge inside TuxGuitar
+  exposing the live score over a localhost socket and applying edits through
+  TuxGuitar's own action/undo system.
 
-See [PLAN.md](PLAN.md) for the full architecture and
-[docs/PROTOCOL.md](docs/PROTOCOL.md) for the bridge protocol.
+Docs: [PLAN.md](PLAN.md) (architecture) ·
+[docs/PROTOCOL.md](docs/PROTOCOL.md) (bridge protocol) ·
+[docs/ROADMAP.md](docs/ROADMAP.md) (what's next).
 
-## Status
+## The AI Ear refinement loop
 
-Phase 8 complete — AI clients can read, analyze, write, refine, **and compose** in the open score
-in TuxGuitar 2.0.1:
+The heart of the project: instead of assuming generated music sounds good,
+the AI iterates —
 
-- **`tabmcp serve`** exposes 30 MCP tools over stdio — reading
-  (`tuxguitar_get_bridge_status`, `tuxguitar_get_score_summary`,
-  `tuxguitar_get_measures`, `tuxguitar_get_selection`), analysis
-  (`tuxguitar_detect_key_and_scale`, `tuxguitar_explain_selection`), and
-  editing (`tuxguitar_replace_measures`, `tuxguitar_transpose`,
-  `tuxguitar_optimize_fingering`, `tuxguitar_generate_bassline`,
-  `tuxguitar_generate_harmony`, `tuxguitar_generate_drums`,
-  `tuxguitar_create_track`,
-  `tuxguitar_change_tuning`, `tuxguitar_play`/`tuxguitar_stop`,
-  `tuxguitar_undo`, `tuxguitar_redo`, `tuxguitar_save_copy`)
-- Every edit is **two-step** (preview → confirm with the previewed revision),
-  **revision-checked** (rejected if the score changed in between), **atomic**,
-  and **undoable with a single Cmd+Z** — including auto-appended measures
-- The bridge plugin (0.4.0) applies change-sets through TuxGuitar's undo
-  system on the UI thread under the editor lock
-- The theory engine detects scales/tonal centers and produces plain-language
-  explanations; transposition is string/fret-aware and refuses edits that
-  would fall off the fretboard
-- **Fingering optimizer**: models the passage as a path-search problem
-  (per-note string/fret candidates -> transition costs -> dynamic
-  programming), with a swappable cost model (fret movement, position
-  shifts, string skips, open-string preference, optional user fret range)
-  and *explanations* — every result says WHY the chosen fingering is
-  easier (e.g. "81% less hand effort; 2 position shifts eliminated;
-  uses 3 open strings")
+1. **Compose** a riff / arrangement (or read what the user wrote)
+2. **Evaluate** — `tuxguitar_evaluate` scores every track: groove
+   consistency, motif repetition (with the recurring interval pattern),
+   note density, robotic-dynamics detection, cross-track dissonance
+   clashes, register masking, rhythmic tightness, key/scale
+3. **Listen** — `tuxguitar_render_and_listen` renders the real mix through
+   TuxGuitar's own soundfont (headless MIDI → fluidsynth → WAV → DSP:
+   loudness, clipping, spectral balance, quiet holes);
+   `tuxguitar_listen_stems` renders **each track in isolation** to hear
+   which instrument causes a problem
+4. **Fix** the top issue with the edit tools — every edit previews first,
+   is revision-checked, and lands in TuxGuitar's undo stack
+5. **Repeat**, narrating each pass — the undo stack is the version history
+   (one Cmd+Z per pass)
 
-## Using with an MCP client
+## Tool surface (30 tools)
 
-Install the binary and register it:
+| Area | Tools |
+|---|---|
+| Status & reading | `get_bridge_status`, `get_score_summary`, `get_measures`, `get_selection` |
+| Analysis | `evaluate` (AI Ear scorecard), `analyze_arrangement`, `detect_key_and_scale`, `detect_chords`, `explain_selection` |
+| Audio ear | `render_and_listen` (full mix), `listen_stems` (per track) |
+| Writing | `replace_measures` (notes, chords, tuplets, two voices, effects incl. `harmonic: {type: "pinch"}` and bend point-curves), `transpose`, `humanize` |
+| Fingering | `optimize_fingering` — chord-aware path search (candidates → cost model → dynamic programming) with "why this fingering" explanations and optional fret-range constraints |
+| Generation | `generate_bassline` (root-following, rhythm-locked, chromatic approaches), `generate_harmony` (diatonic 3rds/6ths), `generate_drums` (percussion channel, accents-locked) |
+| Structure | `create_track` (tuning presets incl. "7-string A standard", bass clef, percussion), `change_tuning`, `set_tempo`, `set_repeat` (loops), `set_marker` |
+| Transport & files | `play`, `play_from`, `stop`, `save_copy`, `export` (multitrack MIDI, Guitar Pro, ... via TuxGuitar's own writers) |
+| History | `undo`, `redo` |
+
+(All tool names carry the `tuxguitar_` prefix.)
+
+Safety model: every mutating tool is **two-step** (preview → confirm bound
+to the previewed revision), **revision-checked** (stale writes rejected),
+**atomic**, and **undoable** — including auto-appended measures and
+generated tracks.
+
+## Quickstart
+
+Requirements: macOS with TuxGuitar 2.x installed, Rust toolchain, JDK 11+,
+Maven; `brew install fluid-synth` for the audio ear.
 
 ```sh
-cargo install --path crates/tabmcp-server   # installs ~/.cargo/bin/tabmcp
+# 1. Build + install the plugin (once per plugin update)
+scripts/install-tuxguitar-deps.sh "/Applications/<your TuxGuitar>.app"   # once
+( cd tuxguitar-mcp-bridge && mvn package )
+cp tuxguitar-mcp-bridge/target/tuxguitar-mcp-bridge.jar \
+   "/Applications/<your TuxGuitar>.app/Contents/MacOS/share/plugins/"
 
-# Claude Code:
+# 2. Install the MCP server binary
+cargo install --path crates/tabmcp-server        # ~/.cargo/bin/tabmcp
+
+# 3. Register with your MCP client (once — updates are picked up on restart)
 claude mcp add tuxguitar -- ~/.cargo/bin/tabmcp serve
 ```
 
-Then, with TuxGuitar running, ask the AI things like "what's open in
-TuxGuitar?", "explain the riff I selected", or "what scale is this?".
+Start TuxGuitar, then in a fresh Claude session try:
 
-## Building
+> *"Write an 8-bar metal riff in E minor with a pinch harmonic, generate
+> bass and drums from it, then refine it with the AI Ear loop until the
+> scorecard is clean — and let me hear every pass."*
 
-### Rust (`tabmcp` binary)
-
-```sh
-cargo build --release          # binary at target/release/tabmcp
-cargo test --workspace         # includes client<->simulator integration tests
-```
-
-### Java plugin
-
-Requires JDK 11+ and Maven, plus an installed TuxGuitar 2.0.1 to compile against:
+## Development
 
 ```sh
-# once: install TuxGuitar's jars into the local Maven repo
-scripts/install-tuxguitar-deps.sh /Applications/tuxguitar-2.0.1-macosx-swt-cocoa-x86_64.app
-
-cd tuxguitar-mcp-bridge
-mvn package                    # target/tuxguitar-mcp-bridge.jar
+cargo test --workspace            # Rust suites incl. client<->simulator tests
+( cd tuxguitar-mcp-bridge && mvn test )   # Java tests against real TG jars
+scripts/dev-reload.sh             # rebuild plugin + restart TuxGuitar + wait
+tabmcp doctor                     # connectivity + score summary
+tabmcp bridge-sim                 # develop the Rust side without TuxGuitar
 ```
 
-### Install the plugin
-
-Copy the jar into TuxGuitar's plugin directory and restart TuxGuitar:
-
-```sh
-cp tuxguitar-mcp-bridge/target/tuxguitar-mcp-bridge.jar \
-   "/Applications/tuxguitar-2.0.1-macosx-swt-cocoa-x86_64.app/Contents/MacOS/share/plugins/"
-```
-
-TuxGuitar's Tools menu gains two entries: **TabMCP: Bridge Status** and
-**TabMCP: Spike Edit (undoable test)**.
-
-## Trying it
-
-With TuxGuitar running:
-
-```sh
-tabmcp doctor        # connect, authenticate, print the open score's summary
-tabmcp spike-test    # apply an undoable test edit, then undo + redo it
-```
-
-Without TuxGuitar:
-
-```sh
-tabmcp bridge-sim    # simulated bridge with a canned song (Ctrl+C to stop)
-tabmcp doctor        # in another terminal — same protocol, no TuxGuitar
-```
+CI: GitHub Actions runs fmt/clippy/tests for Rust, and builds TuxGuitar
+2.0.1 from source (cached) to compile and test the Java plugin.
 
 ## Security
 
-Loopback-only socket, 32-byte random token in a 0600 discovery file, no
-file paths or commands accepted over the wire. AI edits are revision-checked
-and land in TuxGuitar's undo stack.
+Loopback-only socket; 32-byte random token in a 0600 discovery file
+(`~/.tuxguitar-mcp/bridge.json`); no file paths or commands accepted over
+the wire (exports go through TuxGuitar's own dialogs; renders use fixed
+scratch paths under `~/.tuxguitar-mcp/`).
 
 ## License
 
