@@ -75,7 +75,12 @@ aggressive, victorious" checked against the measured tension curve).
 compose-and-refine session), `refine` (N AI-Ear passes on the open score),
 and `band` (five personalities — composer, critic, producer, guitarist,
 listener — each review with their own tools, vote, and the winning fixes
-get applied).
+get applied). For the real thing — five INDEPENDENT model instances with
+separate contexts and optionally different models per role — run
+`python3 scripts/band_session.py` (env
+`TABMCP_BAND_MODELS="critic=opus,listener=haiku"`; `--roles`/`--no-apply`
+to scope a session); a producer's chair instance applies the voted
+changes and the minutes land in `~/.tuxguitar-mcp/band-minutes.txt`.
 
 (All tool names carry the `tuxguitar_` prefix.)
 

@@ -213,11 +213,13 @@ Middle (a session each): riff genealogy (named checkpoints and branch
 trees); A/B render compare (audio-side diff between renders); groove
 feel templates (systematic velocity push/pull).
 
-Far (research): true multi-agent band simulation (independent model
-instances per role - the embedded chat's process machinery could host
-it); headless .tg engine; audio-to-tab Stage 2 (Demucs + basic-pitch);
-TabBench (formalize the battles into a public eval); TuxGuitar 2.1
-migration.
+DONE since: TabBench (bench/ - canonical brief, 100-point judge,
+results from both rounds) and band sim v2 (scripts/band_session.py -
+five independent model instances, per-role model overrides, voted
+changes applied by a producer's chair instance).
+
+Far (research, still open): headless .tg engine; audio-to-tab Stage 2
+(Demucs + basic-pitch); TuxGuitar 2.1 migration.
 
 Explicitly parked by user: loop-practice transport, distribution
 packaging, live audience simulation.
