@@ -72,6 +72,24 @@ pub struct BendPoint {
     pub value: u32,
 }
 
+/// One point of a whammy-bar curve: `position` 0..=12 spans the note,
+/// `value` in semitones - NEGATIVE dives, positive raises.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TremoloBarPoint {
+    pub position: u32,
+    pub value: i32,
+}
+
+/// A tremolo-bar (whammy) curve. An empty `points` list means "standard
+/// dive-and-return" (0,0) -> (6,-2) -> (12,0).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TremoloBarEffect {
+    #[serde(default)]
+    pub points: Vec<TremoloBarPoint>,
+}
+
 /// A bend. An empty `points` list means "standard full-tone bend"
 /// (the bridge writes 0->2 semitones over the first half of the note).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -84,7 +102,10 @@ pub struct BendEffect {
 /// Accept both the legacy boolean form (`"harmonic": true`) and the
 /// parameterized object form on the wire.
 mod effect_compat {
-    use super::{BendEffect, GraceEffect, HarmonicEffect, TremoloPickingEffect, TrillEffect};
+    use super::{
+        BendEffect, GraceEffect, HarmonicEffect, TremoloBarEffect, TremoloPickingEffect,
+        TrillEffect,
+    };
     use serde::{Deserialize, Deserializer};
 
     macro_rules! bool_or_full {
@@ -106,6 +127,7 @@ mod effect_compat {
     }
 
     bool_or_full!(grace, GraceEffect);
+    bool_or_full!(tremolo_bar, TremoloBarEffect);
     bool_or_full!(trill, TrillEffect);
     bool_or_full!(tremolo_picking, TremoloPickingEffect);
 
@@ -179,8 +201,12 @@ pub struct NoteEffects {
         skip_serializing_if = "Option::is_none"
     )]
     pub bend: Option<BendEffect>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub tremolo_bar: bool,
+    #[serde(
+        default,
+        deserialize_with = "effect_compat::tremolo_bar",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tremolo_bar: Option<TremoloBarEffect>,
     #[serde(
         default,
         deserialize_with = "effect_compat::harmonic",

@@ -405,6 +405,12 @@ struct HumanizeParams {
     /// Maximum velocity variation (default 8, max 30).
     #[serde(default)]
     amount: Option<u32>,
+    /// Groove feel layered UNDER the jitter: "driving" (beats push, offbeats
+    /// recede - forward energy), "laid-back" (backbeats swell, downbeats sit
+    /// - heavy pocket), "pocket" (2 and 4 hit hardest, ghosted 16ths -
+    /// funk/groove), or omit for pure random feel.
+    #[serde(default)]
+    feel: Option<String>,
     /// False (default): preview only. True: apply — requires expected_revision.
     #[serde(default)]
     confirm: bool,
@@ -512,7 +518,7 @@ struct VaryRiffParams {
     from_measure: u32,
     to_measure: u32,
     /// One of: "displace", "retrograde", "invert", "octave", "augment",
-    /// "diminish", "pedal", "regroup", "swap_dynamics".
+    /// "diminish", "pedal", "regroup", "swap_dynamics", "arpeggiate".
     transform: String,
     /// displace: shift in ticks (default 480 = an 8th; odd amounts like 120
     /// or 360 give polyrhythmic feels). pedal/regroup: grid unit in ticks
@@ -526,6 +532,9 @@ struct VaryRiffParams {
     /// cycling across barlines for implied polymeter.
     #[serde(default)]
     grouping: Option<String>,
+    /// arpeggiate only: "up" (default), "down" or "updown".
+    #[serde(default)]
+    direction: Option<String>,
     /// pedal only: string/fret of the pedal tone (default: lowest string open).
     #[serde(default)]
     pedal_string: Option<u32>,
@@ -558,6 +567,13 @@ struct EvaluateParams {
     /// "0.2,0.5,0.8,1.0,0.4") — the measured curve is compared against it.
     #[serde(default)]
     tension_target: Option<String>,
+    /// Technique budget like "palmMute=30-70,harmonic=0-15": per-track
+    /// measured technique percentages are checked against these windows
+    /// and drift is flagged. Keys: palmMute, staccato, letRing, deadNote,
+    /// ghostNote, vibrato, slide, hammer, bend, harmonic, tremoloPicking,
+    /// grace, trill, accent.
+    #[serde(default)]
+    technique_target: Option<String>,
     /// Emotional journey as comma- or arrow-separated feeling words (e.g.
     /// "calm, uneasy, aggressive, victorious") — mapped onto the tension
     /// scale and compared like tension_target. Vocabulary: calm, dreamy,
@@ -649,6 +665,39 @@ struct GenerateRiffParams {
     #[serde(default)]
     phrase_len: Option<u32>,
     /// False (default): preview. True: apply - requires expected_revision.
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    expected_revision: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct CheckpointParams {
+    /// "save" (snapshot a range under a name), "tree" (show the family
+    /// tree) or "restore" (write a snapshot back).
+    action: String,
+    /// save/restore: checkpoint name (e.g. "verse-v2-darker").
+    #[serde(default)]
+    name: Option<String>,
+    /// save: range to snapshot.
+    #[serde(default)]
+    track_number: Option<u32>,
+    #[serde(default)]
+    from_measure: Option<u32>,
+    #[serde(default)]
+    to_measure: Option<u32>,
+    /// save: parent checkpoint name - builds the branch tree ("verse-v1").
+    #[serde(default)]
+    parent: Option<String>,
+    /// save: one-line note ("displaced 8th, darker b2 accents").
+    #[serde(default)]
+    note: Option<String>,
+    /// restore: where to write (defaults to the snapshot's own location).
+    #[serde(default)]
+    dest_track: Option<u32>,
+    #[serde(default)]
+    dest_measure: Option<u32>,
+    /// restore: false (default) previews; true applies with expected_revision.
     #[serde(default)]
     confirm: bool,
     #[serde(default)]
@@ -1932,7 +1981,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "Humanize a passage: vary note velocities by a deterministic +/- amount (default 8) so playback and MIDI export feel less robotic. Pitches and rhythm unchanged. TWO-STEP SAFETY: preview, then confirm=true with expected_revision. Undoable.",
+        description = "Humanize a passage: vary note velocities by a deterministic +/- amount (default 8), optionally layered over a groove feel - 'driving' (downbeats push), 'laid-back' (backbeats swell, heavy pocket), 'pocket' (2 and 4 hardest, ghosted 16ths - funk). Pitches and rhythm unchanged. TWO-STEP SAFETY: preview, then confirm=true with expected_revision. Undoable.",
         annotations(
             title = "Humanize velocities",
             read_only_hint = false,
@@ -1975,10 +2024,40 @@ impl TabMcp {
             .call_bridge(move |client| client.read_measures(track_number, from, to))
             .await
             .map_err(BridgeCallError::into_error_data)?;
+        let feel = p.feel.as_deref().unwrap_or("");
+        if !feel.is_empty() && !matches!(feel, "driving" | "laid-back" | "pocket") {
+            return Err(ErrorData::invalid_params(
+                format!("unknown feel '{feel}'; available: driving, laid-back, pocket"),
+                None,
+            ));
+        }
         let mut measures = range.measures;
         let mut changed = 0u32;
         for measure in &mut measures {
             for beat in &mut measure.beats {
+                let offset = beat.start_tick.saturating_sub(measure.start_tick);
+                // Systematic push/pull by grid position, layered under the
+                // random jitter. Values are velocity deltas.
+                let feel_delta: i64 = match feel {
+                    "driving" => {
+                        if offset % 960 == 0 { 8 } else if offset % 480 == 0 { -4 } else { -8 }
+                    }
+                    "laid-back" => {
+                        // Backbeats (2 and 4 in 4/4: odd quarter indices) swell.
+                        let quarter = offset / 960;
+                        if offset % 960 == 0 && quarter % 2 == 1 { 10 }
+                        else if offset % 960 == 0 { -4 }
+                        else { -2 }
+                    }
+                    "pocket" => {
+                        let quarter = offset / 960;
+                        if offset % 960 == 0 && quarter % 2 == 1 { 12 }
+                        else if offset % 240 == 0 && offset % 480 != 0 { -14 }
+                        else if offset % 960 == 0 { 0 }
+                        else { -6 }
+                    }
+                    _ => 0,
+                };
                 for voice in &mut beat.voices {
                     for note in &mut voice.notes {
                         // Deterministic jitter: same input -> same result.
@@ -1986,7 +2065,8 @@ impl TabMcp {
                             ^ beat.start_tick.wrapping_mul(19349663)
                             ^ (note.string as u64).wrapping_mul(83492791);
                         let delta = (hash % (2 * amount as u64 + 1)) as i64 - amount;
-                        let new_velocity = (note.velocity as i64 + delta).clamp(25, 120) as u32;
+                        let new_velocity =
+                            (note.velocity as i64 + delta + feel_delta).clamp(25, 120) as u32;
                         if new_velocity != note.velocity {
                             changed += 1;
                         }
@@ -2000,8 +2080,9 @@ impl TabMcp {
                 applied: false,
                 summary: format!(
                     "PREVIEW ONLY — nothing changed. Would vary velocity on {changed} note(s) \
-                     (+/-{amount}) in measures {from}-{to} of track {track_number}. To apply, \
+                     (+/-{amount}{}) in measures {from}-{to} of track {track_number}. To apply, \
                      call again with confirm=true and expected_revision={}.",
+                    if feel.is_empty() { String::new() } else { format!(", feel '{feel}'") },
                     range.revision,
                 ),
                 revision: range.revision,
@@ -2572,7 +2653,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "Vary a riff mechanically — 9 transforms: 'displace' shifts onsets by N ticks (wrapping per measure; odd ticks = polyrhythmic); 'retrograde' reverses pitch order; 'invert' mirrors pitches around the first note; 'octave' shifts by whole octaves (octaves param, negative = down); 'augment' doubles durations (result is 2x measures); 'diminish' halves durations (material compresses into the first half); 'pedal' fills empty grid slots with palm-muted pedal tones (pedal_string/pedal_fret, grid = amount); 'regroup' accents a grouping like 3+3+2 cycling across barlines (implied polymeter); 'swap_dynamics' flips palm-mutes and accents (call-and-response variant). Meter-aware. Write in place or to dest_measure. TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
+        description = "Vary a riff mechanically — 9 transforms: 'displace' shifts onsets by N ticks (wrapping per measure; odd ticks = polyrhythmic); 'retrograde' reverses pitch order; 'invert' mirrors pitches around the first note; 'octave' shifts by whole octaves (octaves param, negative = down); 'augment' doubles durations (result is 2x measures); 'diminish' halves durations (material compresses into the first half); 'pedal' fills empty grid slots with palm-muted pedal tones (pedal_string/pedal_fret, grid = amount); 'regroup' accents a grouping like 3+3+2 cycling across barlines (implied polymeter); 'swap_dynamics' flips palm-mutes and accents (call-and-response variant); 'arpeggiate' spreads chords into picked let-ring patterns (direction up/down/updown, grid = amount - the black metal device; pair with ornament flavor=tremolo). Meter-aware. Write in place or to dest_measure. TWO-STEP: preview, then confirm=true with expected_revision. Undoable.",
         annotations(title = "Vary riff", read_only_hint = false, destructive_hint = true)
     )]
     async fn tuxguitar_vary_riff(
@@ -2591,7 +2672,8 @@ impl TabMcp {
             .map_err(BridgeCallError::into_error_data)?;
         let mut measures = range.measures;
         use tabmcp_theory::transforms;
-        let needs_tuning = matches!(p.transform.as_str(), "invert" | "octave" | "pedal");
+        let needs_tuning =
+            matches!(p.transform.as_str(), "invert" | "octave" | "pedal" | "arpeggiate");
         let tuning: Vec<(u32, u8)> = if needs_tuning {
             let song = self.fetch_song().await?;
             let strings = song
@@ -2652,11 +2734,17 @@ impl TabMcp {
                 transforms::accent_group(&mut measures, &groups, p.amount.unwrap_or(240) as u64);
             }
             "swap_dynamics" => transforms::swap_dynamics(&mut measures),
+            "arpeggiate" => transforms::arpeggiate(
+                &mut measures,
+                &tuning,
+                p.direction.as_deref().unwrap_or("up"),
+                p.amount.unwrap_or(240) as u64,
+            ),
             other => {
                 return Err(ErrorData::invalid_params(
                     format!(
                         "unknown transform '{other}'; available: displace, retrograde, invert, \
-                         octave, augment, diminish, pedal, regroup, swap_dynamics"
+                         octave, augment, diminish, pedal, regroup, swap_dynamics, arpeggiate"
                     ),
                     None,
                 ))
@@ -3270,6 +3358,204 @@ impl TabMcp {
             notes_before: Some(notes),
             notes_after: Some(result.notes_after),
         }))
+    }
+
+    #[tool(
+        description = "RIFF GENEALOGY — checkpoints with a family tree: action='save' snapshots a range under a name with an optional parent ('verse-v2' child of 'verse-v1') and note; action='tree' shows the branching history; action='restore' writes any snapshot back (its original spot or dest_track/dest_measure). Variants accumulate instead of overwriting - explore darker/faster/simpler branches and return to any ancestor. Snapshots persist per document at ~/.tuxguitar-mcp/genealogy/. Restore is TWO-STEP (preview, then confirm=true with expected_revision) and undoable.",
+        annotations(title = "Checkpoint", read_only_hint = false, destructive_hint = false)
+    )]
+    async fn tuxguitar_checkpoint(
+        &self,
+        params: Parameters<CheckpointParams>,
+    ) -> Result<String, ErrorData> {
+        let Parameters(p) = params;
+        let song = self.fetch_song().await?;
+        let dir = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".tuxguitar-mcp")
+            .join("genealogy");
+        let file = dir.join(format!("{}.jsonl", song.document_id));
+        let load = || -> Vec<serde_json::Value> {
+            std::fs::read_to_string(&file)
+                .map(|text| {
+                    text.lines()
+                        .filter_map(|line| serde_json::from_str(line).ok())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        match p.action.as_str() {
+            "save" => {
+                let name = p.name.clone().ok_or_else(|| {
+                    ErrorData::invalid_params("save requires a name", None)
+                })?;
+                let (Some(track), Some(from), Some(to)) =
+                    (p.track_number, p.from_measure, p.to_measure)
+                else {
+                    return Err(ErrorData::invalid_params(
+                        "save requires track_number, from_measure, to_measure",
+                        None,
+                    ));
+                };
+                if from == 0 || to < from || to - from + 1 > MAX_MEASURES_PER_READ {
+                    return Err(ErrorData::invalid_params("invalid range", None));
+                }
+                let entries = load();
+                if entries
+                    .iter()
+                    .any(|e| e.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
+                {
+                    return Err(ErrorData::invalid_params(
+                        format!("checkpoint '{name}' already exists - pick a new name"),
+                        None,
+                    ));
+                }
+                if let Some(parent) = &p.parent {
+                    if !entries
+                        .iter()
+                        .any(|e| e.get("name").and_then(|n| n.as_str()) == Some(parent.as_str()))
+                    {
+                        return Err(ErrorData::invalid_params(
+                            format!("parent '{parent}' not found - save it first or omit parent"),
+                            None,
+                        ));
+                    }
+                }
+                let range = self
+                    .call_bridge(move |client| client.read_measures(track, from, to))
+                    .await
+                    .map_err(BridgeCallError::into_error_data)?;
+                let notes = count_notes(&range.measures);
+                let entry = serde_json::json!({
+                    "name": name,
+                    "parent": p.parent,
+                    "note": p.note,
+                    "track": track,
+                    "from": from,
+                    "to": to,
+                    "revision": range.revision,
+                    "measures": serde_json::to_value(&range.measures)
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+                });
+                let _ = std::fs::create_dir_all(&dir);
+                use std::io::Write as _;
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file)
+                    .and_then(|mut f| writeln!(f, "{entry}"))
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(format!(
+                    "Checkpoint '{name}' saved: track {track} m{from}-{to}, {notes} notes{}{}",
+                    p.parent
+                        .as_ref()
+                        .map(|par| format!(", child of '{par}'"))
+                        .unwrap_or_default(),
+                    p.note
+                        .as_ref()
+                        .map(|n| format!(" - {n}"))
+                        .unwrap_or_default(),
+                ))
+            }
+            "tree" => {
+                let entries = load();
+                if entries.is_empty() {
+                    return Ok(
+                        "No checkpoints for this document yet - save one with action='save'."
+                            .into(),
+                    );
+                }
+                fn print_node(
+                    out: &mut String,
+                    entries: &[serde_json::Value],
+                    parent: Option<&str>,
+                    depth: usize,
+                ) {
+                    for e in entries {
+                        let this_parent = e.get("parent").and_then(|x| x.as_str());
+                        if this_parent != parent {
+                            continue;
+                        }
+                        let name = e.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                        out.push_str(&format!(
+                            "{}{} (t{} m{}-{}){}\n",
+                            "  ".repeat(depth + 1),
+                            name,
+                            e.get("track").and_then(|x| x.as_u64()).unwrap_or(0),
+                            e.get("from").and_then(|x| x.as_u64()).unwrap_or(0),
+                            e.get("to").and_then(|x| x.as_u64()).unwrap_or(0),
+                            e.get("note")
+                                .and_then(|x| x.as_str())
+                                .map(|n| format!(" - {n}"))
+                                .unwrap_or_default(),
+                        ));
+                        print_node(out, entries, Some(name), depth + 1);
+                    }
+                }
+                let mut out = String::from("RIFF GENEALOGY (this document):\n");
+                print_node(&mut out, &entries, None, 0);
+                out.push_str("Restore any node with action='restore', name='...'.\n");
+                Ok(out)
+            }
+            "restore" => {
+                let name = p.name.clone().ok_or_else(|| {
+                    ErrorData::invalid_params("restore requires a name", None)
+                })?;
+                let entries = load();
+                let entry = entries
+                    .iter()
+                    .find(|e| e.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
+                    .ok_or_else(|| {
+                        ErrorData::invalid_params(
+                            format!("checkpoint '{name}' not found - see action='tree'"),
+                            None,
+                        )
+                    })?;
+                let mut measures: Vec<tabmcp_model::Measure> =
+                    serde_json::from_value(entry.get("measures").cloned().unwrap_or_default())
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let track = p
+                    .dest_track
+                    .or_else(|| entry.get("track").and_then(|x| x.as_u64()).map(|x| x as u32))
+                    .unwrap_or(1);
+                let dest = p
+                    .dest_measure
+                    .or_else(|| entry.get("from").and_then(|x| x.as_u64()).map(|x| x as u32))
+                    .unwrap_or(1);
+                for (i, measure) in measures.iter_mut().enumerate() {
+                    measure.number = dest + i as u32;
+                }
+                let notes = count_notes(&measures);
+                if !p.confirm {
+                    return Ok(format!(
+                        "PREVIEW ONLY - nothing changed. Would restore checkpoint '{name}' \
+                         ({notes} notes) to track {track} at measure {dest}. To apply, call \
+                         again with confirm=true and expected_revision={}.",
+                        song.revision,
+                    ));
+                }
+                let expected_revision = p.expected_revision.ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        "confirm=true requires expected_revision (from the preview call)",
+                        None,
+                    )
+                })?;
+                let result = self
+                    .call_bridge(move |client| {
+                        client.apply_replace_measures(track, dest, &measures, expected_revision)
+                    })
+                    .await
+                    .map_err(BridgeCallError::into_error_data)?;
+                Ok(format!(
+                    "Restored checkpoint '{name}' to track {track} at measure {dest} \
+                     (revision {}). The user can undo with Cmd+Z.",
+                    result.new_revision,
+                ))
+            }
+            other => Err(ErrorData::invalid_params(
+                format!("unknown action '{other}'; available: save, tree, restore"),
+                None,
+            )),
+        }
     }
 
     #[tool(
@@ -4516,7 +4802,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "AI EAR — one deep listening pass over every track for the refinement loop: per-track groove consistency, syncopation, motif development (literal vs varied repeats), tension curve, harmonic rhythm, note density, dynamics (robotic-velocity detection), plus cross-track analysis (clashes, masking, alignment, empty bars), key/scale detection, a human-feel check for AI artifacts, and the session's pass-over-pass trend. Optional: style=<name> checks tempo+syncopation against that style's targets; tension_target=\"0.2,0.5,1.0\" compares the measured tension curve to a desired arc. Loop: evaluate -> fix the top issue -> evaluate again; finish with tuxguitar_render_and_listen.",
+        description = "AI EAR — one deep listening pass over every track for the refinement loop: per-track groove consistency, syncopation, motif development (literal vs varied repeats), tension curve, harmonic rhythm, note density, dynamics (robotic-velocity detection), plus cross-track analysis (clashes, masking, alignment, empty bars), key/scale detection, a human-feel check for AI artifacts, and the session's pass-over-pass trend. Optional: style=<name> checks tempo+syncopation+development quota against that style's targets; technique_target=\"palmMute=30-70,...\" enforces a technique budget; tension_target=\"0.2,0.5,1.0\" compares the measured tension curve to a desired arc. Loop: evaluate -> fix the top issue -> evaluate again; finish with tuxguitar_render_and_listen.",
         annotations(title = "Evaluate (AI Ear)", read_only_hint = true)
     )]
     async fn tuxguitar_evaluate(
@@ -4590,6 +4876,81 @@ impl TabMcp {
                 &report,
                 &format!("Track {} \"{}\"", track.number, track.name),
             ));
+            // Technique mix + optional budget check.
+            if !track.is_percussion {
+                let mut counts: std::collections::BTreeMap<&str, usize> =
+                    std::collections::BTreeMap::new();
+                let mut total = 0usize;
+                for measure in &range.measures {
+                    for beat in &measure.beats {
+                        for voice in &beat.voices {
+                            for note in &voice.notes {
+                                if note.tied {
+                                    continue;
+                                }
+                                total += 1;
+                                let e = &note.effects;
+                                for (name, hit) in [
+                                    ("palmMute", e.palm_mute),
+                                    ("staccato", e.staccato),
+                                    ("letRing", e.let_ring),
+                                    ("deadNote", e.dead_note),
+                                    ("ghostNote", e.ghost_note),
+                                    ("vibrato", e.vibrato),
+                                    ("slide", e.slide),
+                                    ("hammer", e.hammer),
+                                    ("bend", e.bend.is_some()),
+                                    ("harmonic", e.harmonic.is_some()),
+                                    ("tremoloPicking", e.tremolo_picking.is_some()),
+                                    ("grace", e.grace.is_some()),
+                                    ("trill", e.trill.is_some()),
+                                    ("accent", e.accent || e.heavy_accent),
+                                ] {
+                                    if hit {
+                                        *counts.entry(name).or_default() += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if total > 0 {
+                    let mix: Vec<String> = counts
+                        .iter()
+                        .map(|(name, c)| {
+                            format!("{name} {:.0}%", *c as f64 / total as f64 * 100.0)
+                        })
+                        .collect();
+                    out.push_str(&format!(
+                        "  techniques: {}\n",
+                        if mix.is_empty() { "none (dry)".into() } else { mix.join(", ") }
+                    ));
+                    if let Some(spec) = &p.technique_target {
+                        for entry in spec.split(',') {
+                            let Some((key, window)) = entry.split_once('=') else { continue };
+                            let Some((lo, hi)) = window.split_once('-') else { continue };
+                            let (Ok(lo), Ok(hi)) =
+                                (lo.trim().parse::<f64>(), hi.trim().parse::<f64>())
+                            else {
+                                continue;
+                            };
+                            let key = key.trim();
+                            let measured = counts
+                                .iter()
+                                .find(|(name, _)| name.eq_ignore_ascii_case(key))
+                                .map(|(_, c)| *c as f64 / total as f64 * 100.0)
+                                .unwrap_or(0.0);
+                            if measured < lo || measured > hi {
+                                out.push_str(&format!(
+                                    "  TECHNIQUE BUDGET: {key} at {measured:.0}% is outside \
+                                     the target {lo:.0}-{hi:.0}% - adjust with \
+                                     tuxguitar_ornament or edit the effects\n",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
             reports.push((track.number, track.is_percussion, report));
             inputs.push(tabmcp_theory::arrangement::TrackInput {
                 number: track.number,
@@ -5189,7 +5550,7 @@ impl TabMcp {
     }
 
     #[tool(
-        description = "The 'virtual ear', audio edition: render the WHOLE song through TuxGuitar's own soundfont (headless MIDI -> fluidsynth -> WAV) and analyze the actual audio — true loudness, clipping, spectral balance (low-end mud / darkness), and quiet holes. Slower than tuxguitar_analyze_arrangement (use that for note-level issues); use this to hear the MIX. Requires fluidsynth (brew install fluid-synth). The WAV is kept at ~/.tuxguitar-mcp/render.wav for the user to play.",
+        description = "The 'virtual ear', audio edition: render the WHOLE song through TuxGuitar's own soundfont (headless MIDI -> fluidsynth -> WAV) and analyze the actual audio — true loudness, clipping, spectral balance (low-end mud / darkness), and quiet holes. Slower than tuxguitar_analyze_arrangement (use that for note-level issues); use this to hear the MIX. Requires fluidsynth (brew install fluid-synth). The WAV is kept at ~/.tuxguitar-mcp/render.wav for the user to play; the previous take rotates to render-prev.wav and the report includes an A/B delta (loudness, peak, low-end share) against it.",
         annotations(title = "Render & listen", read_only_hint = true)
     )]
     async fn tuxguitar_render_and_listen(&self) -> Result<String, ErrorData> {
@@ -5255,8 +5616,13 @@ impl TabMcp {
             })?
         };
 
-        // 3. Render to WAV.
+        // 3. Render to WAV, keeping the previous take for A/B comparison.
         let wav_path = PathBuf::from(&home).join(".tuxguitar-mcp/render.wav");
+        let prev_path = PathBuf::from(&home).join(".tuxguitar-mcp/render-prev.wav");
+        let had_previous = wav_path.exists();
+        if had_previous {
+            let _ = std::fs::rename(&wav_path, &prev_path);
+        }
         let output = tokio::task::spawn_blocking({
             let fluidsynth = fluidsynth.to_string();
             let soundfont = soundfont.clone();
@@ -5295,6 +5661,35 @@ impl TabMcp {
         .await
         .map_err(|e| ErrorData::internal_error(format!("analysis task failed: {e}"), None))?
         .map_err(|e| ErrorData::internal_error(e, None))?;
+
+        // A/B against the previous take: overall + biggest per-measure moves.
+        let mut ab_notes = String::new();
+        if had_previous && prev_path.exists() {
+            let prev_report = tokio::task::spawn_blocking({
+                let prev_path = prev_path.clone();
+                move || crate::audio::analyze_wav(&prev_path)
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+            if let Some(prev) = prev_report {
+                let rms_delta = report.rms_dbfs - prev.rms_dbfs;
+                let peak_delta = report.peak_dbfs - prev.peak_dbfs;
+                let low_delta = (report.band_share.0 - prev.band_share.0) * 100.0;
+                ab_notes.push_str(&format!(
+                    "\nA/B vs previous take: loudness {:+.1} dB, peak {:+.1} dB, \
+                     low-end share {:+.0}pp{}\n",
+                    rms_delta,
+                    peak_delta,
+                    low_delta,
+                    if rms_delta.abs() < 0.3 && low_delta.abs() < 3.0 {
+                        " - essentially the same mix"
+                    } else {
+                        ""
+                    },
+                ));
+            }
+        }
 
         // Measure-aligned levels when the timeline is linear (no repeats).
         let mut measure_notes = String::new();
@@ -5350,9 +5745,10 @@ impl TabMcp {
             }
         }
         Ok(format!(
-            "{}{}Rendered with TuxGuitar's soundfont ({}).\nAudio kept at {} — the user can play it.",
+            "{}{}{}Rendered with TuxGuitar's soundfont ({}).\nAudio kept at {} — the user can play it.",
             crate::audio::describe(&report),
             measure_notes,
+            ab_notes,
             soundfont.file_name().and_then(|n| n.to_str()).unwrap_or("sf2"),
             wav_path.display(),
         ))

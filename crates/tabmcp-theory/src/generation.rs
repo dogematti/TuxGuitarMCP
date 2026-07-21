@@ -298,7 +298,10 @@ pub fn generate_bassline(
         .collect();
     let description = format!(
         "root-following bass, {} notes mirroring the source rhythm; roots per measure: {}; \
-         chromatic approach notes into root changes",
+         chromatic approach notes into root changes. WHY: register floored at E2 (MIDI 40) \
+         because the bundled soundfont voices nothing lower; rhythm mirrors the source's \
+         ACCENTS rather than every onset so the stems separate; fifth-walks fill \
+         single-root stretches to avoid a drone",
         notes.len(),
         root_names.join(" ")
     );
@@ -359,10 +362,14 @@ pub fn generate_harmony(
         .map_err(|bad| format!("{} harmony note(s) not playable on this tuning", bad.len()))?;
 
     let description = format!(
-        "diatonic {interval}s above the lead in {} {} ({} notes)",
+        "diatonic {interval}s above the lead in {} {} ({} notes). WHY: {} {} was the \
+         best-scoring scale for the source material, so every harmony note stays diatonic \
+         to it instead of transposing chromatically (chromatic 3rds clash on scale steps)",
         best.root,
         best.scale,
-        notes.len()
+        notes.len(),
+        best.root,
+        best.scale,
     );
     Ok((build_measures(source, &notes, &fingering.path), description))
 }
@@ -625,13 +632,21 @@ pub fn generate_drums(
         });
     }
     let description = format!(
-        "'{}' groove{}",
+        "'{}' groove{}. WHY: hits beyond each measure's actual length are dropped so odd \
+         meters stay intact{}",
         template.name,
         if template.follow_accents {
             format!(" with {extra_kicks} kick(s) doubling the source's low-register accents")
         } else {
             String::new()
-        }
+        },
+        if template.follow_accents {
+            "; kicks double the guitar's LOW notes because low-register onsets are the \
+             accents that give the unison weight"
+        } else {
+            "; this template holds its own pattern instead of following the source - pick \
+             'rock' or generate_interlock when you want kick unison"
+        },
     );
     Ok((measures, description))
 }

@@ -281,6 +281,29 @@ public class ChangesetApplier {
 			effect.setBend(tgBend);
 		}
 
+		JsonElement tremoloBar = wire.get("tremoloBar");
+		if (isPresent(tremoloBar)) {
+			app.tuxguitar.song.models.effects.TGEffectTremoloBar tgBar =
+				factory.newEffectTremoloBar();
+			com.google.gson.JsonArray barPoints = (tremoloBar.isJsonObject()
+				&& tremoloBar.getAsJsonObject().has("points"))
+					? tremoloBar.getAsJsonObject().getAsJsonArray("points") : null;
+			if (barPoints != null && barPoints.size() > 0) {
+				for (JsonElement pointElement : barPoints) {
+					JsonObject point = pointElement.getAsJsonObject();
+					tgBar.addPoint(
+						point.has("position") ? point.get("position").getAsInt() : 0,
+						point.has("value") ? point.get("value").getAsInt() : 0);
+				}
+			} else {
+				// Standard dive-and-return.
+				tgBar.addPoint(0, 0);
+				tgBar.addPoint(6, -2);
+				tgBar.addPoint(12, 0);
+			}
+			effect.setTremoloBar(tgBar);
+		}
+
 		// Parameterized articulations (since plugin 0.8.0). Each accepts the
 		// legacy boolean form (true = sensible default) or a parameter object.
 		JsonElement tremolo = wire.get("tremoloPicking");

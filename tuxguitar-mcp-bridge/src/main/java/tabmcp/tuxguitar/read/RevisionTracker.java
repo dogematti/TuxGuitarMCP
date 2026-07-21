@@ -15,8 +15,15 @@ import app.tuxguitar.event.TGEventListener;
  */
 public class RevisionTracker implements TGEventListener {
 
+	/** Update events closer together than this collapse into ONE bump.
+	 *  A single user/AI edit fires several MEASURE_UPDATED events (one per
+	 *  touched measure); clients kept seeing the revision "jump" and
+	 *  retrying. Coalescing keeps one edit = one revision step. */
+	private static final long COALESCE_WINDOW_MS = 150;
+
 	private final AtomicLong revision = new AtomicLong(0);
 	private volatile String documentId = UUID.randomUUID().toString();
+	private volatile long lastBumpAtMs = 0;
 
 	public long getRevision() {
 		return this.revision.get();
@@ -26,6 +33,14 @@ public class RevisionTracker implements TGEventListener {
 		return this.documentId;
 	}
 
+	private void bumpCoalesced() {
+		long now = System.currentTimeMillis();
+		if (now - this.lastBumpAtMs >= COALESCE_WINDOW_MS) {
+			this.revision.incrementAndGet();
+		}
+		this.lastBumpAtMs = now;
+	}
+
 	public void processEvent(TGEvent event) {
 		if (TGUpdateEvent.EVENT_TYPE.equals(event.getEventType())) {
 			Object mode = event.getAttribute(TGUpdateEvent.PROPERTY_UPDATE_MODE);
@@ -33,11 +48,12 @@ public class RevisionTracker implements TGEventListener {
 				switch ((Integer) mode) {
 					case TGUpdateEvent.MEASURE_UPDATED:
 					case TGUpdateEvent.SONG_UPDATED:
-						this.revision.incrementAndGet();
+						this.bumpCoalesced();
 						break;
 					case TGUpdateEvent.SONG_LOADED:
 						this.documentId = UUID.randomUUID().toString();
 						this.revision.incrementAndGet();
+						this.lastBumpAtMs = System.currentTimeMillis();
 						break;
 					default:
 						break;

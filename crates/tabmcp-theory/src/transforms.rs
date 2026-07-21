@@ -345,6 +345,90 @@ pub fn rebar(source: &[Measure], dest_template: &[Measure]) -> Vec<Measure> {
     out
 }
 
+/// Arpeggiate: chords become picked patterns. Each beat holding 2+ notes
+/// is spread across its span as single notes cycling through the chord
+/// tones in the given direction ("up" = low to high, "down", "updown").
+/// The black-metal device: held triads become tremolo-ready streams.
+/// Single-note beats pass through untouched.
+pub fn arpeggiate(measures: &mut [Measure], tuning: Tuning, direction: &str, grid: u64) {
+    let open: HashMap<u32, u8> = tuning.iter().copied().collect();
+    let grid = grid.max(120);
+    let lens = lengths(measures);
+    let value = ((3840 / grid) as u32).clamp(1, 64);
+    for (measure, len) in measures.iter_mut().zip(lens) {
+        let mut new_beats: Vec<Beat> = Vec::new();
+        let old_beats = std::mem::take(&mut measure.beats);
+        for beat in old_beats.into_iter() {
+            let mut chord: Vec<Note> = beat
+                .voices
+                .iter()
+                .flat_map(|v| v.notes.iter().cloned())
+                .collect();
+            if chord.len() < 2 {
+                new_beats.push(beat);
+                continue;
+            }
+            let offset = beat.start_tick.saturating_sub(measure.start_tick);
+            // Sort chord tones low to high by pitch.
+            chord.sort_by_key(|n| {
+                open.get(&n.string).map(|&o| o as u32 + n.fret).unwrap_or(0)
+            });
+            let ordered: Vec<Note> = match direction {
+                "down" => chord.iter().rev().cloned().collect(),
+                "updown" => {
+                    let mut v: Vec<Note> = chord.clone();
+                    v.extend(chord.iter().rev().skip(1).cloned());
+                    v
+                }
+                _ => chord.clone(),
+            };
+            // Fill the chord's written duration (capped at the barline).
+            let span = beat
+                .voices
+                .iter()
+                .map(|v| {
+                    let base = 3840u64 / v.duration.value.max(1) as u64;
+                    if v.duration.dotted { base + base / 2 } else { base }
+                })
+                .max()
+                .unwrap_or(grid)
+                .min(len - offset);
+            let mut slot = 0u64;
+            let mut index = 0usize;
+            while slot + grid <= span.max(grid) && offset + slot < len {
+                let source = &ordered[index % ordered.len()];
+                new_beats.push(Beat {
+                    start_tick: measure.start_tick + offset + slot,
+                    voices: vec![Voice {
+                        index: 0,
+                        duration: Duration {
+                            value,
+                            dotted: false,
+                            double_dotted: false,
+                            tuplet: Tuplet { enters: 1, times: 1 },
+                        },
+                        is_rest: false,
+                        notes: vec![Note {
+                            string: source.string,
+                            fret: source.fret,
+                            velocity: source.velocity,
+                            tied: false,
+                            effects: NoteEffects {
+                                let_ring: true,
+                                ..NoteEffects::default()
+                            },
+                        }],
+                    }],
+                });
+                slot += grid;
+                index += 1;
+            }
+        }
+        new_beats.sort_by_key(|b| b.start_tick);
+        measure.beats = new_beats;
+    }
+}
+
 /// Dynamics swap: palm-muted notes become accented open stabs and vice versa
 /// — turns a chug line into its call-and-response counterpart.
 pub fn swap_dynamics(measures: &mut [Measure]) {
@@ -535,6 +619,81 @@ mod tests {
         assert_eq!(out[1].beats.len(), 3); // 1920,2400,2880 fit; 3360 beyond 3360? 3360 = 2*1680 boundary -> dropped
         let first_m2 = out[1].beats[0].start_tick - out[1].start_tick;
         assert_eq!(first_m2, 1920 - 1680);
+    }
+
+    #[test]
+    fn arpeggiate_spreads_chords_and_keeps_singles() {
+        // Bar: half-note Am triad (A2 C3 E3-ish on strings 5-3) + two
+        // single 8ths.
+        let start = 960u64;
+        let chord_notes = vec![(5u32, 0u32), (4, 2), (3, 2)];
+        let mut m = vec![Measure {
+            number: 1,
+            start_tick: start,
+            key_signature: 0,
+            beats: vec![
+                Beat {
+                    start_tick: start,
+                    voices: vec![Voice {
+                        index: 0,
+                        duration: Duration {
+                            value: 2,
+                            dotted: false,
+                            double_dotted: false,
+                            tuplet: Tuplet { enters: 1, times: 1 },
+                        },
+                        is_rest: false,
+                        notes: chord_notes
+                            .iter()
+                            .map(|&(string, fret)| Note {
+                                string,
+                                fret,
+                                velocity: 95,
+                                tied: false,
+                                effects: NoteEffects::default(),
+                            })
+                            .collect(),
+                    }],
+                },
+                Beat {
+                    start_tick: start + 1920,
+                    voices: vec![Voice {
+                        index: 0,
+                        duration: Duration {
+                            value: 8,
+                            dotted: false,
+                            double_dotted: false,
+                            tuplet: Tuplet { enters: 1, times: 1 },
+                        },
+                        is_rest: false,
+                        notes: vec![Note {
+                            string: 6,
+                            fret: 0,
+                            velocity: 95,
+                            tied: false,
+                            effects: NoteEffects::default(),
+                        }],
+                    }],
+                },
+            ],
+        }];
+        const STANDARD6: &[(u32, u8)] =
+            &[(1, 64), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+        arpeggiate(&mut m, STANDARD6, "up", 240);
+        // Half note (1920 ticks) at 240 grid = 8 arpeggio notes + the
+        // untouched single at 1920.
+        assert_eq!(m[0].beats.len(), 8 + 1);
+        // Each arpeggio beat is a single let-ring note cycling up.
+        let first = &m[0].beats[0].voices[0].notes[0];
+        assert_eq!(first.string, 5); // lowest chord tone first
+        assert!(first.effects.let_ring);
+        let second = &m[0].beats[1].voices[0].notes[0];
+        assert_eq!(second.string, 4);
+        // The single-note 8th passed through untouched.
+        let last = m[0].beats.last().unwrap();
+        assert_eq!(last.start_tick, start + 1920);
+        assert_eq!(last.voices[0].notes.len(), 1);
+        assert!(!last.voices[0].notes[0].effects.let_ring);
     }
 
     #[test]

@@ -142,7 +142,14 @@ Parameterized articulations (since plugin 0.8.0) - each accepts `true`
   "transition": "none"|"slide"|"bend"|"hammer", "dead": bool }` - fret
   absent means "two frets below the note"; duration 1 = 64th, 2 = 32nd
   (default), 3 = 16th; transition defaults to hammer.
-- Still a presence flag (not applied on write): tremoloBar.
+- `"tremoloBar": { "points": [{ "position": 0-12, "value": <semitones,
+  negative dives> }] }` (since plugin 0.9.6) - empty/missing points means
+  the standard dive-and-return (0,0) -> (6,-2) -> (12,0). Read side emits
+  the same shape.
+
+Revision coalescing (since 0.9.6): update events closer than 150 ms
+collapse into ONE revision bump, so a single edit that touches several
+measures no longer makes the revision "jump".
 
 Errors: `E_NO_DOCUMENT`, `E_INVALID_RANGE`.
 

@@ -141,7 +141,19 @@ public class MeasureReader {
 			bend.add("points", points);
 			dto.add("bend", bend);
 		}
-		addFlag(dto, "tremoloBar", effect.isTremoloBar());
+		if (effect.isTremoloBar() && effect.getTremoloBar() != null) {
+			JsonObject tremoloBar = new JsonObject();
+			JsonArray barPoints = new JsonArray();
+			for (app.tuxguitar.song.models.effects.TGEffectTremoloBar.TremoloBarPoint point
+					: effect.getTremoloBar().getPoints()) {
+				JsonObject dtoPoint = new JsonObject();
+				dtoPoint.addProperty("position", point.getPosition());
+				dtoPoint.addProperty("value", point.getValue());
+				barPoints.add(dtoPoint);
+			}
+			tremoloBar.add("points", barPoints);
+			dto.add("tremoloBar", tremoloBar);
+		}
 		if (effect.isHarmonic() && effect.getHarmonic() != null) {
 			JsonObject harmonic = new JsonObject();
 			harmonic.addProperty("type", harmonicName(effect.getHarmonic().getType()));
