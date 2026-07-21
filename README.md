@@ -85,6 +85,17 @@ to the previewed revision), **revision-checked** (stale writes rejected),
 generated tracks. A golden wire-format fixture in CI guards the
 Rust<->Java protocol against accidental changes.
 
+## TabBench: the composition eval
+
+The riff battles are formalized as a repeatable benchmark in `bench/`:
+a canonical brief (`bench/prompt.md`), an objective judge
+(`bench/judge.py` - 100-point rubric over style match, scale, development
+quota, hook, structure, cleanliness, human feel, and mix), and the
+results so far (`bench/TABBENCH.md`). Any MCP-capable agent can enter:
+fresh score, same brief, one client at a time, blind ear-vote alongside
+the panel. Two informal rounds are on the books - Gemini took round one,
+Claude took round two on the upgraded toolkit.
+
 ## Embedded chat: the AI musician inside TuxGuitar
 
 Plugin 0.9.0 adds Tools -> "TabMCP: AI Musician Chat" - a chat window
